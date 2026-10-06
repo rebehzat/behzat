@@ -28,7 +28,7 @@ sh dist/package/install.sh
 ```
 
 The release includes the Bun runtime; running Behzat does not require a separate
-Bun installation. Updating Pi uses npm 22-compatible tooling on your machine:
+Bun installation. Updating Pi uses npm with Node.js 22 or newer on your machine:
 
 ```sh
 behzat update-pi 1.0.4
@@ -59,7 +59,7 @@ Markdown `AGENTS.md` and `CLAUDE.md` context files are still read.
 | --- | --- |
 | `/models`, `/login`, `/logout` | Pi models and provider authentication |
 | `Ctrl+E`, `/effort` | Keyboard/mouse effort slider; supported effort is shown in the footer |
-| `/effort ultracode` | Request xhigh and enable automatic workflow orchestration |
+| `/effort ultracode`, `/effort ultracode off` | Toggle orchestration; Tab also toggles it in the effort slider |
 | `/ultracode on`, `/ultracode off` | Toggle orchestration independently from model effort |
 | `Shift+Tab`, `/approval ask\|auto\|plan` | Cycle approval modes |
 | `Ctrl+Y`, `Ctrl+N` | Allow or deny the first pending tool request |
@@ -94,7 +94,9 @@ actionable configuration error. No key is embedded in the repository or release.
 Behzat independently implements the orchestration pattern described in
 [Claude Code's workflow docs](https://code.claude.com/docs/en/workflows).
 It does not include Claude Code code or call an Anthropic-only harness feature.
-Ultracode tells the main agent to author a workflow for substantive tasks, with
+`--effort ultracode` requests xhigh and enables orchestration. The session toggle
+and numeric effort choices preserve the other setting. Ultracode tells the main
+agent to author a workflow for substantive tasks, with
 investigation, adversarial verification and synthesis. Selection depends on the
 model following those instructions; an explicit workflow works deterministically.
 The rainbow status appears only when the mode is on.

@@ -10,7 +10,7 @@ import { loadPi } from '../src/pi.ts';
 
 async function setup(width = 110) {
   const directory = await mkdtemp(join(tmpdir(), 'behzat-tui-'));
-  const harness = new Harness(directory, Config.parse({ reducedMotion: true }));
+  const harness = new Harness(directory, Config.parse({ reducedMotion: true }), join(directory, 'state'));
   const pi = await loadPi(); harness.pi = pi;
   harness.runtime = await pi.ModelRuntime.create({ authPath: join(directory, 'auth.json'), modelsPath: null, refreshOnCreate: false });
   const { session } = await pi.createAgentSession({ cwd: directory, modelRuntime: harness.runtime, sessionManager: pi.SessionManager.inMemory(directory), settingsManager: pi.SettingsManager.inMemory({}), resourceLoader: await (await import('../src/resources.ts')).resources(pi, directory), tools: [] });
@@ -90,5 +90,22 @@ test('agent question dialog accepts a suggested answer and dismisses cancellatio
     const error = await declined;
     if (!(error instanceof Error)) throw new Error('Expected question cancellation');
     expect(error.message).toBe('User declined to answer');
+  } finally { await view.cleanup(); }
+});
+
+test('effort slider toggles Ultracode independently and cancelling preserves the session', async () => {
+  const view = await setup();
+  try {
+    const select = view.ui.command('/effort'); await Bun.sleep(5);
+    view.mockInput.pressArrow('left'); view.mockInput.pressTab(); await view.renderOnce();
+    expect(view.captureCharFrame()).toContain('Selected: low');
+    expect(view.captureCharFrame()).toContain('Ultracode: ON');
+    view.mockInput.pressEnter(); await select;
+    expect(view.harness.config.effort).toBe('low'); expect(view.harness.ultracode).toBe(true);
+    await view.ui.command('/effort high'); expect(view.harness.ultracode).toBe(true);
+    const cancelled = view.ui.command('/effort').catch(error => error as Error); await Bun.sleep(5);
+    view.mockInput.pressTab(); view.mockInput.pressEscape(); await cancelled;
+    expect(view.harness.ultracode).toBe(true); expect(view.harness.config.effort).toBe('high');
+    await view.ui.command('/effort ultracode off'); expect(view.harness.ultracode).toBe(false);
   } finally { await view.cleanup(); }
 });

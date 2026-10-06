@@ -120,13 +120,13 @@ export class Harness extends EventEmitter {
     await this.session!.setModel(model);
     this.config.model = `${model.provider}/${model.id}`;
     this.session!.setThinkingLevel(this.config.effort);
-    await saveConfig(this.config); this.emit('change');
+    await saveConfig(this.config, this.home); this.emit('change');
   }
-  async setEffort(effort: Effort, ultra = false) {
+  async setEffort(effort: Effort, ultra = this.ultracode) {
     this.config.effort = effort;
     this.ultracode = ultra;
     this.session!.setThinkingLevel(effort);
-    await saveConfig(this.config); this.emit('change');
+    await saveConfig(this.config, this.home); this.emit('change');
   }
   async login(provider: string, type: AuthType, interaction: AuthInteraction) {
     await this.runtime.login(provider, type, interaction);
