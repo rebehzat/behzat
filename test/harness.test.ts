@@ -87,3 +87,25 @@ test('auto approval dispatch writes, streams, and persists a resumable session',
     expect(fixtureRun.harness.session!.getActiveToolNames()).toContain('workflow_run');
   } finally { await fixtureRun.close(); }
 });
+
+test('cancel aborts a real Pi OAuth login waiting outside a prompt', async () => {
+  const run = await fixture('ask');
+  try {
+    let ready!: () => void;
+    const started = new Promise<void>(resolve => { ready = resolve; });
+    let signal!: AbortSignal;
+    const native = run.harness.runtime.getProvider('openai-codex')!;
+    run.harness.runtime.registerNativeProvider({ ...native, id: 'behzat-auth-fixture', name: 'Auth fixture', auth: { oauth: {
+      ...native.auth.oauth!, login: async interaction => {
+        signal = interaction.signal; ready();
+        return new Promise<never>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      },
+    } } });
+    const login = run.harness.login('behzat-auth-fixture', 'oauth', { prompt: async () => '', notify: () => {} }).catch(error => error as Error);
+    await started; expect(run.harness.authenticating).toBe('behzat-auth-fixture');
+    await run.harness.abort();
+    expect(signal.aborted).toBe(true); expect(await login).toBeInstanceOf(Error);
+    expect(run.harness.authenticating).toBeUndefined();
+    expect(run.harness.entries.some(entry => entry.text === 'Connected behzat-auth-fixture')).toBe(false);
+  } finally { await run.close(); }
+});

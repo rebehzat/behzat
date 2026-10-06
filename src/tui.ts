@@ -109,7 +109,7 @@ export class TerminalUI {
     this.input.focus(); this.render();
   }
   private activeTasks() {
-    return [...this.harness.tasks.values()].some(task => task.status === 'running' || task.status === 'queued') || [...this.harness.workflows.runs.values()].some(run => run.status === 'running') || [...this.harness.terminals.jobs.values()].some(job => job.status === 'running');
+    return Boolean(this.harness.authenticating) || [...this.harness.tasks.values()].some(task => task.status === 'running' || task.status === 'queued') || [...this.harness.workflows.runs.values()].some(run => run.status === 'running') || [...this.harness.terminals.jobs.values()].some(job => job.status === 'running');
   }
   private schedule() {
     if (this.closed || this.scheduled) return;
@@ -148,7 +148,7 @@ export class TerminalUI {
     const agents = [...h.tasks.values()].filter(task => task.status === 'running' || task.status === 'queued').length;
     const workflows = [...h.workflows.runs.values()].filter(run => run.status === 'running').length;
     const terminals = [...h.terminals.jobs.values()].filter(job => job.status === 'running').length;
-    const status = [h.busy ? `${['·', '•', '●', '•'][this.phase % 4]} working` : '', workflows ? `${workflows} workflow${workflows > 1 ? 's' : ''}` : '', agents ? `${agents} subagent${agents > 1 ? 's' : ''}` : '', terminals ? `${terminals} terminal${terminals > 1 ? 's' : ''}` : ''].filter(Boolean).join('  ·  ');
+    const status = [h.busy ? `${['·', '•', '●', '•'][this.phase % 4]} working` : '', h.authenticating ? `connecting ${h.authenticating}` : '', workflows ? `${workflows} workflow${workflows > 1 ? 's' : ''}` : '', agents ? `${agents} subagent${agents > 1 ? 's' : ''}` : '', terminals ? `${terminals} terminal${terminals > 1 ? 's' : ''}` : ''].filter(Boolean).join('  ·  ');
     const ultra = 'ULTRACODE'.split('').map((letter, index) => fg(rainbow[(index + this.phase) % rainbow.length])(letter));
     this.live.content = h.ultracode ? t`${ultra[0]}${ultra[1]}${ultra[2]}${ultra[3]}${ultra[4]}${ultra[5]}${ultra[6]}${ultra[7]}${ultra[8]}  ${status}` : status;
     this.live.visible = Boolean(status || h.ultracode);

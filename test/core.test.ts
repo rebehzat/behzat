@@ -38,9 +38,17 @@ test('workflow validates dependency identity and cycles before starting agents',
 test('parallel workflow checkpoints outputs and resume skips completed stages', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'behzat-workflow-'));
   let concurrent = 0; let maximum = 0; const calls: string[] = [];
+  let independentStarted = 0; let release!: () => void;
+  const bothStarted = new Promise<void>(resolve => { release = resolve; });
   const workflows = new Workflows(dir, 2, async (prompt) => {
     concurrent++; maximum = Math.max(maximum, concurrent); calls.push(prompt);
-    await Bun.sleep(5); concurrent--; return `report:${prompt}`;
+    // Keep the independent stages running until both enter the runner. Disk
+    // checkpoint latency must not determine whether this concurrency test passes.
+    if (/^[ab]\n\n$/.test(prompt)) {
+      if (++independentStarted === 2) release();
+      await bothStarted;
+    }
+    concurrent--; return `report:${prompt}`;
   });
   try {
     const run = await workflows.start({ name: 'test', stages: [{ id: 'a', prompt: 'a' }, { id: 'b', prompt: 'b' }, { id: 'c', prompt: 'c', dependsOn: ['a', 'b'] }] }, dir);

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { z } from 'zod';
 import { Client, StreamableHTTPClientTransport, type Tool } from '@modelcontextprotocol/client';
 import { StdioClientTransport, getDefaultEnvironment } from '@modelcontextprotocol/client/stdio';
+import manifest from '../package.json';
 
 const environmentNames = z.record(z.string(), z.string().regex(/^[A-Za-z_][A-Za-z0-9_]*$/));
 const Server = z.discriminatedUnion('transport', [
@@ -36,7 +37,7 @@ export class Mcp extends EventEmitter {
       : new StreamableHTTPClientTransport(new URL(server.url), { requestInit: { headers: resolveEnvironment(server.headers), redirect: 'error' } });
     // Drain process stderr without injecting server logs or credentials into the TUI.
     if (transport instanceof StdioClientTransport) transport.stderr?.on('data', () => {});
-    const client = new Client({ name: 'behzat', version: '0.1.0' });
+    const client = new Client({ name: 'behzat', version: manifest.version });
     const controller = new AbortController(); this.connecting.set(name, controller); this.emit('change');
     try {
       const stop = signal ? AbortSignal.any([controller.signal, signal]) : controller.signal;
