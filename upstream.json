@@ -1,0 +1,5 @@
+{
+  "pi": { "repository": "https://github.com/earendil-works/pi", "release": "v1.0.4", "modifications": false },
+  "opencode": { "repository": "https://github.com/anomalyco/opencode", "branch": "v2", "commit": "6bffe7932efa9adc36b74e389598daecb4b17ac1", "usage": "Layout reference and MIT-licensed theme assets; independent harness on OpenTUI" },
+  "claudeCode": { "usage": "Independent workflow and Ultracode implementation based on public documentation; no Anthropic code included", "documentation": "https://code.claude.com/docs/en/workflows" }
+}
