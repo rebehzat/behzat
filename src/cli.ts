@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { Harness } from './harness.ts';
 import { readConfig, efforts, stateDir, type Effort } from './config.ts';
 import { loadPi, bundlePi } from './pi.ts';
+import { TinyFish } from './tinyfish.ts';
 import { resources } from './resources.ts';
 import manifest from '../package.json';
 
@@ -28,8 +29,9 @@ Usage: behzat [options] [prompt]
   --version           Print version
   --help              Print help
 
-TUI: /models /login /effort /workflows /terminal /help
-TinyFish: set TINYFISH_API_KEY in your shell.
+TUI: /commands /models /login /apikey /effort /workflows /terminal /help
+Keys: Ctrl+D quit · Ctrl+P commands · Ctrl+E effort · Ctrl+T sidebar
+TinyFish: /apikey tinyfish or TINYFISH_API_KEY in your shell.
 Pi extension loading is always disabled.
 `;
 
@@ -50,11 +52,12 @@ async function main() {
     if (positionals[0] === 'providers') {
       console.log(runtime.getProviders().map(provider => `${provider.id}\t${provider.name}\t${provider.auth.oauth ? 'oauth ' : ''}${provider.auth.apiKey?.login ? 'api_key' : 'ambient'}`).join('\n')); return;
     }
+    const tinyfish = new TinyFish(); await tinyfish.loadKey(stateDir());
     const cwd = process.cwd();
     const { session, extensionsResult } = await pi.createAgentSession({ cwd, agentDir: stateDir(), modelRuntime: runtime, resourceLoader: await resources(pi, cwd), sessionManager: pi.SessionManager.inMemory(cwd), settingsManager: pi.SettingsManager.inMemory({ cacheWarming: 'off' }), tools: [] });
     try {
       if (extensionsResult.extensions.length) throw new Error('Pi compatibility check discovered forbidden extensions');
-      console.log(JSON.stringify({ behzat: manifest.version, pi: 'external SDK', extensions: extensionsResult.extensions.length, sessionCompatible: true, providers: runtime.getProviders().length, models: runtime.getModels().length, connectedModels: runtime.getAvailableSnapshot().length, tinyfish: Boolean(process.env.TINYFISH_API_KEY), state: stateDir(), runtimeError: runtime.getError() ?? null }, null, 2));
+      console.log(JSON.stringify({ behzat: manifest.version, pi: 'external SDK', extensions: extensionsResult.extensions.length, sessionCompatible: true, providers: runtime.getProviders().length, models: runtime.getModels().length, connectedModels: runtime.getAvailableSnapshot().length, tinyfish: tinyfish.configured, state: stateDir(), runtimeError: runtime.getError() ?? null }, null, 2));
     } finally { session.dispose(); }
     return;
   }

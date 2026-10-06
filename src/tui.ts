@@ -1,7 +1,7 @@
 import {
   BoxRenderable, TextRenderable, TextareaRenderable, InputRenderable,
   ScrollBoxRenderable, MarkdownRenderable, SyntaxStyle,
-  type CliRenderer, type KeyEvent, type PasteEvent, t, fg,
+  type CliRenderer, type KeyEvent, type PasteEvent, StyledText, t, fg,
 } from '@opentui/core';
 import { basename, resolve, join } from 'node:path';
 import { readFile, writeFile, readdir } from 'node:fs/promises';
@@ -10,17 +10,14 @@ import { Harness } from './harness.ts';
 import { efforts, saveConfig, stateDir, type Effort } from './config.ts';
 import { palette as p, rainbow, cleanTerminalText } from './theme.ts';
 import type { Question } from './questions.ts';
+import { commands, match } from './commands.ts';
 
 interface Choice { label: string; detail?: string; value: string }
 interface Dialog {
   kind: 'choose' | 'input' | 'effort'; title: string; choices: Choice[]; selected: number;
-  secret?: boolean; ultra?: boolean; resolve: (value: string) => void; reject: (error: Error) => void;
+  secret?: boolean; ultra?: boolean; query?: string; resolve: (value: string) => void; reject: (error: Error) => void;
 }
-const commands = [
-  '/models', '/login', '/logout', '/effort', '/ultracode', '/approval', '/new', '/resume', '/fork',
-  '/compact', '/context', '/export', '/diff', '/tasks', '/subagent', '/workflow', '/workflows',
-  '/deep-research', '/terminal', '/skill', '/todos', '/mcp', '/help', '/quit',
-];
+
 
 export class TerminalUI {
   readonly root: BoxRenderable;
@@ -40,7 +37,13 @@ export class TerminalUI {
   private dialog?: Dialog;
   private presentingQuestion = false;
   private secretValue = '';
-  private details = false;
+  private details = true;
+  private main: BoxRenderable;
+  private composer: BoxRenderable;
+  private completions: BoxRenderable;
+  private completionText: TextRenderable;
+  private completionIndex = 0;
+  private dismissedQuery?: string;
   private phase = 0;
   private timer: ReturnType<typeof setInterval>;
   private scheduled?: ReturnType<typeof setTimeout>;
@@ -64,23 +67,25 @@ export class TerminalUI {
   private historyIndex = 0;
 
   constructor(readonly renderer: CliRenderer, readonly harness: Harness, private readonly quit: () => void) {
-    this.root = new BoxRenderable(renderer, { id: 'behzat', width: '100%', height: '100%', flexDirection: 'column', paddingX: 2, backgroundColor: p.background });
+    this.root = new BoxRenderable(renderer, { id: 'behzat', width: '100%', height: '100%', flexDirection: 'column', paddingX: 1, backgroundColor: p.background });
     renderer.root.add(this.root);
-    this.header = new TextRenderable(renderer, { id: 'header', content: '', height: 2, flexShrink: 0, fg: p.muted });
+    this.header = new TextRenderable(renderer, { id: 'header', content: '', height: 1, flexShrink: 0, fg: p.muted });
     this.root.add(this.header);
     const body = new BoxRenderable(renderer, { id: 'body', flexGrow: 1, minHeight: 0, flexDirection: 'row' });
     this.root.add(body);
     this.history = new ScrollBoxRenderable(renderer, { id: 'transcript', flexGrow: 1, minWidth: 0, scrollY: true, stickyScroll: true, stickyStart: 'bottom', viewportCulling: true, contentOptions: { gap: 1, paddingRight: 1 } });
-    body.add(this.history);
-    this.sidebar = new BoxRenderable(renderer, { id: 'sidebar', width: 32, visible: false, border: ['left'], borderColor: p.border, paddingLeft: 2 });
+    this.main = new BoxRenderable(renderer, { id: 'main', flexGrow: 1, minWidth: 0, flexDirection: 'column', paddingRight: 1 });
+    body.add(this.main); this.main.add(this.history);
+    this.sidebar = new BoxRenderable(renderer, { id: 'sidebar', width: 30, visible: true, backgroundColor: p.panel, paddingX: 2, paddingY: 1, flexShrink: 0 });
     this.sideText = new TextRenderable(renderer, { id: 'task-details', content: '', fg: p.muted, wrapMode: 'word' });
-    this.sidebar.add(this.sideText); body.add(this.sidebar);
+    const sideScroll = new ScrollBoxRenderable(renderer, { id: 'sidebar-scroll', flexGrow: 1, minHeight: 0, scrollY: true });
+    sideScroll.add(this.sideText); this.sidebar.add(sideScroll); body.add(this.sidebar);
     this.live = new TextRenderable(renderer, { id: 'live-status', content: '', height: 1, flexShrink: 0, visible: false });
-    this.root.add(this.live);
-    const composer = new BoxRenderable(renderer, { id: 'composer', flexDirection: 'column', backgroundColor: p.panel, border: ['left'], borderColor: p.primary, paddingX: 2, paddingY: 1, height: 6, flexShrink: 0 });
-    this.root.add(composer);
+    this.main.add(this.live);
+    const composer = this.composer = new BoxRenderable(renderer, { id: 'composer', flexDirection: 'column', backgroundColor: p.panel, border: ['left'], borderColor: p.primary, paddingX: 2, paddingY: 1, height: 5, flexShrink: 0 });
+    this.main.add(composer);
     this.input = new TextareaRenderable(renderer, {
-      id: 'prompt', height: 3, width: '100%', backgroundColor: p.panel, textColor: p.text,
+      id: 'prompt', height: 2, width: '100%', backgroundColor: p.panel, textColor: p.text,
       focusedBackgroundColor: p.panel, placeholder: 'Ask Behzat…   / commands',
       keyBindings: [{ name: 'return', action: 'submit' }, { name: 'return', shift: true, action: 'newline' }],
       onSubmit: () => { void this.submit(); },
@@ -89,16 +94,19 @@ export class TerminalUI {
     this.footer = new TextRenderable(renderer, { id: 'footer', content: '', height: 1, fg: p.muted });
     composer.add(this.footer);
     this.hints = new TextRenderable(renderer, { id: 'hints', content: 'ctrl+p commands   ctrl+e effort   shift+tab approvals   esc cancel', height: 1, flexShrink: 0, fg: p.muted, truncate: true });
-    this.root.add(this.hints);
-    this.modal = new BoxRenderable(renderer, { id: 'dialog', position: 'absolute', top: '12%', left: '5%', width: '90%', maxHeight: '75%', padding: 2, border: true, borderColor: p.border, backgroundColor: p.panel, zIndex: 10, visible: false });
+    this.main.add(this.hints);
+    this.completions = new BoxRenderable(renderer, { id: 'command-menu', position: 'absolute', bottom: 6, left: 0, width: '100%', paddingX: 2, paddingY: 1, backgroundColor: p.panel, zIndex: 5, visible: false });
+    this.completionText = new TextRenderable(renderer, { id: 'command-options', content: '', wrapMode: 'none', fg: p.text });
+    this.completions.add(this.completionText); this.main.add(this.completions);
+    this.modal = new BoxRenderable(renderer, { id: 'dialog', position: 'absolute', bottom: 6, left: 0, width: '100%', maxHeight: '80%', padding: 1, border: true, borderColor: p.border, backgroundColor: p.panel, zIndex: 10, visible: false });
     this.modalTitle = new TextRenderable(renderer, { id: 'dialog-title', content: '', fg: p.primary, marginBottom: 1 });
-    this.modalList = new TextRenderable(renderer, { id: 'dialog-choices', content: '', fg: p.text, wrapMode: 'word', onMouseDown: event => this.selectSlider(event.x), onMouseDrag: event => this.selectSlider(event.x) });
+    this.modalList = new TextRenderable(renderer, { id: 'dialog-choices', content: '', fg: p.text, wrapMode: 'word', onMouseDown: event => this.selectSlider(event.x, event.y), onMouseDrag: event => this.selectSlider(event.x, event.y) });
     this.modalInput = new InputRenderable(renderer, { id: 'dialog-input', backgroundColor: p.panel, textColor: p.text, focusedBackgroundColor: p.panel, maxLength: 16000, placeholder: 'Type here…' });
     this.secretMask = new TextRenderable(renderer, { id: 'secret-mask', content: '', fg: p.text, visible: false });
     this.modal.add(this.modalTitle); this.modal.add(this.modalList); this.modal.add(this.secretMask); this.modal.add(this.modalInput);
-    this.root.add(this.modal);
-    this.modalInput.on('input', () => this.drawDialog());
-    this.input.on('content-change', () => this.schedule());
+    this.main.add(this.modal);
+    this.modalInput.on('input', () => { if (this.dialog?.kind === 'choose') { this.dialog.query = this.modalInput.value; this.dialog.selected = 0; } this.drawDialog(); });
+    this.input.onContentChange = () => { this.completionIndex = 0; this.schedule(); };
     harness.on('change', this.change);
     renderer.keyInput.on('keypress', this.keypress);
     renderer.keyInput.on('paste', this.paste);
@@ -118,13 +126,16 @@ export class TerminalUI {
   render() {
     const h = this.harness;
     const session = h.session;
+    const inputHeight = Math.max(2, Math.min(this.input.virtualLineCount, Math.max(2, Math.floor(this.renderer.height / 4))));
+    this.input.height = inputHeight; this.composer.height = inputHeight + 3;
+    this.modal.bottom = this.completions.bottom = inputHeight + 4;
     this.header.content = t`${fg(p.text)('behzat')}  ${basename(h.cwd)}${session?.sessionManager.getSessionName() ? ` · ${session.sessionManager.getSessionName()}` : ''}`;
     const entries = h.entries.slice(-400);
     const ids = new Set(entries.map(entry => entry.id));
-    for (const [id, row] of this.rows) if (!ids.has(id)) { row.box.destroyRecursively(); this.rows.delete(id); }
+    for (const [id, row] of this.rows) if (!ids.has(id) && !(id === 'welcome' && !entries.length)) { row.box.destroyRecursively(); this.rows.delete(id); }
     if (!entries.length && !this.rows.has('welcome')) {
-      const box = new BoxRenderable(this.renderer, { id: 'welcome', marginTop: 3, paddingX: 2 });
-      const text = new TextRenderable(this.renderer, { id: 'welcome-text', fg: p.muted, content: 'behzat\n\nBuild, investigate, and verify.\n\n/models  Choose a Pi model\n/login   Connect a provider\n/effort  Reasoning and Ultracode\n\nEnter to send · Shift+Enter for a new line', wrapMode: 'word' });
+      const box = new BoxRenderable(this.renderer, { id: 'welcome', marginTop: 1, paddingX: 1 });
+      const text = new TextRenderable(this.renderer, { id: 'welcome-text', fg: p.muted, content: 'Build, investigate, and verify.\n\n/  Browse commands\n/models  Choose a model\n/login  Connect a provider\n/apikey  Add a provider or TinyFish key\n\nEnter to send · Shift+Enter for a new line', wrapMode: 'word' });
       box.add(text); this.history.add(box); this.rows.set('welcome', { box, text, value: '' });
     }
     if (entries.length && this.rows.has('welcome')) { this.rows.get('welcome')!.box.destroyRecursively(); this.rows.delete('welcome'); }
@@ -144,27 +155,26 @@ export class TerminalUI {
     const usage = session?.getContextUsage();
     const stats = session?.getSessionStats();
     const model = session?.model;
+    this.footer.truncate = true;
     this.footer.content = `${h.permissions.mode}  ·  ${model ? `${model.provider}/${model.id}` : 'Choose a model'}  ·  ${session?.thinkingLevel ?? h.config.effort}${usage?.percent !== null && usage?.percent !== undefined ? `  ·  ${Math.round(usage.percent)}% context` : ''}${stats?.cost ? `  ·  $${stats.cost.toFixed(3)}` : ''}`;
     const agents = [...h.tasks.values()].filter(task => task.status === 'running' || task.status === 'queued').length;
     const workflows = [...h.workflows.runs.values()].filter(run => run.status === 'running').length;
     const terminals = [...h.terminals.jobs.values()].filter(job => job.status === 'running').length;
     const status = [h.busy ? `${['·', '•', '●', '•'][this.phase % 4]} working` : '', h.authenticating ? `connecting ${h.authenticating}` : '', workflows ? `${workflows} workflow${workflows > 1 ? 's' : ''}` : '', agents ? `${agents} subagent${agents > 1 ? 's' : ''}` : '', terminals ? `${terminals} terminal${terminals > 1 ? 's' : ''}` : ''].filter(Boolean).join('  ·  ');
     const ultra = 'ULTRACODE'.split('').map((letter, index) => fg(rainbow[(index + this.phase) % rainbow.length])(letter));
-    this.live.content = h.ultracode ? t`${ultra[0]}${ultra[1]}${ultra[2]}${ultra[3]}${ultra[4]}${ultra[5]}${ultra[6]}${ultra[7]}${ultra[8]}  ${status}` : status;
+    this.live.content = h.ultracode ? t`${fg(rainbow[this.phase % rainbow.length])(['✦', '✧', '⋆', '✧'][this.phase % 4])} ${ultra[0]}${ultra[1]}${ultra[2]}${ultra[3]}${ultra[4]}${ultra[5]}${ultra[6]}${ultra[7]}${ultra[8]}  ${status}` : status;
     this.live.visible = Boolean(status || h.ultracode);
     this.sidebar.visible = this.details && this.renderer.width >= 90;
-    this.sideText.content = this.taskSummary();
+    this.sideText.content = cleanTerminalText(`${session?.sessionManager.getSessionName() || 'SESSION'}\n${basename(h.cwd)}\n\nMODEL\n${model ? `${model.provider}\n${model.id}` : 'Use /models to choose'}\n\nCONTEXT\n${usage?.percent != null ? `${Math.round(usage.percent)}% used` : 'No messages yet'}${stats?.cost ? ` · $${stats.cost.toFixed(3)}` : ''}\n\nPERMISSIONS\n${h.permissions.mode} · ${session?.thinkingLevel ?? h.config.effort} effort\n\n${this.taskSummary()}`);
     if (!this.dialog && h.permissions.pending.size) {
       const approval = [...h.permissions.pending.values()][0].request;
       this.hints.content = `ctrl+y allow · ctrl+n deny · ${approval.tool} ${JSON.stringify(approval.input).slice(0, 160)}`;
       this.hints.fg = p.primary;
     } else {
-      const input = this.input.plainText;
-      const suggestions = input.startsWith('/') && !input.includes(' ') ? commands.filter(command => command.startsWith(input)).slice(0, 5) : [];
-      this.hints.content = suggestions.length ? suggestions.join('   ') : 'ctrl+p commands   ctrl+e effort   shift+tab approvals   esc cancel';
+      this.hints.content = this.renderer.width >= 90 ? 'ctrl+p commands   ctrl+e effort   ctrl+t sidebar   ctrl+d quit' : 'ctrl+p commands · ctrl+e effort · ctrl+d quit';
       this.hints.fg = p.muted;
     }
-    this.drawDialog();
+    this.drawCompletions(); this.drawDialog();
     if (!this.dialog && !this.presentingQuestion && h.questions.pending.size) {
       const question = [...h.questions.pending.values()][0].question;
       void this.showQuestion(question);
@@ -182,8 +192,8 @@ export class TerminalUI {
     } catch { this.harness.questions.answer(question.id); }
     finally { this.presentingQuestion = false; this.schedule(); }
   }
-  private selectSlider(x: number) {
-    if (this.dialog?.kind !== 'effort') return;
+  private selectSlider(x: number, y: number) {
+    if (this.dialog?.kind !== 'effort' || y !== this.modalList.y || this.main.width < 70) return;
     this.dialog.selected = Math.max(0, Math.min(this.dialog.choices.length - 1, Math.floor((x - this.modalList.x) / 8)));
     if (this.dialog.choices[this.dialog.selected].value === 'ultracode') this.dialog.ultra = true;
     this.drawDialog();
@@ -197,22 +207,24 @@ export class TerminalUI {
     if (h.workflows.runs.size) sections.push('WORKFLOWS\n' + [...h.workflows.runs.values()].slice(-5).map(run => `${run.id.slice(0, 8)} ${run.definition.name}\n${run.status} · ${Object.values(run.results).filter(result => result.status === 'done').length}/${run.definition.stages.length}`).join('\n\n'));
     if (h.tasks.size) sections.push('SUBAGENTS\n' + [...h.tasks.values()].slice(-8).map(task => `${task.id} ${task.status}\n${task.prompt.slice(0, 70)}`).join('\n\n'));
     if (h.terminals.jobs.size) sections.push('TERMINALS\n' + [...h.terminals.jobs.values()].slice(-5).map(job => `${job.id} ${job.status}\n${job.command.slice(0, 70)}`).join('\n\n'));
-    return cleanTerminalText(sections.join('\n\n') || 'No active tasks.');
+    return cleanTerminalText(sections.join('\n\n') || 'READY\nNo background work');
   }
   private async submit() {
     const text = this.input.plainText.trim();
     if (!text) return;
-    this.input.setText(''); this.historyItems.push(text); this.historyIndex = this.historyItems.length;
+    this.input.setText(''); if (!/^\/(apikey|keys)(?:\s|$)/.test(text)) this.historyItems.push(text); this.historyIndex = this.historyItems.length;
     try { if (text.startsWith('/')) await this.command(text); else await this.harness.prompt(text); }
     catch (error) { this.harness.notice(error instanceof Error ? error.message : String(error)); }
   }
   private key(key: KeyEvent) {
+    if (key.ctrl && key.name === 'd') { key.preventDefault(); key.stopPropagation(); this.quit(); return; }
     if (this.dialog) {
       const dialog = this.dialog;
       if (key.name === 'escape' || (key.ctrl && key.name === 'c')) { key.preventDefault(); this.finishDialog(undefined); return; }
       if (key.name === 'return') {
         key.preventDefault();
-        const value = dialog.choices[dialog.selected]?.value;
+        const value = this.dialogChoices(dialog)[dialog.selected]?.value;
+        if (dialog.kind === 'choose' && value === undefined) return;
         this.finishDialog(dialog.kind === 'input' ? (dialog.secret ? this.secretValue : this.modalInput.value) : dialog.kind === 'effort' ? JSON.stringify({ effort: value === 'ultracode' ? 'xhigh' : value, ultra: Boolean(dialog.ultra) }) : value);
         return;
       }
@@ -226,18 +238,25 @@ export class TerminalUI {
         this.modalInput.value = '•'.repeat(Math.min(this.secretValue.length, 60)); return;
       }
       if (dialog.kind !== 'input') {
-        const direction = key.name === 'up' || key.name === 'left' ? -1 : key.name === 'down' || key.name === 'right' ? 1 : 0;
-        if (direction) { key.preventDefault(); dialog.selected = (dialog.selected + direction + dialog.choices.length) % dialog.choices.length; if (dialog.kind === 'effort' && dialog.choices[dialog.selected].value === 'ultracode') dialog.ultra = true; this.drawDialog(); }
+        const choices = this.dialogChoices(dialog);
+        const direction = key.name === 'up' || (dialog.kind === 'effort' && key.name === 'left') ? -1 : key.name === 'down' || (dialog.kind === 'effort' && key.name === 'right') ? 1 : 0;
+        if (direction && choices.length) { key.preventDefault(); key.stopPropagation(); dialog.selected = (dialog.selected + direction + choices.length) % choices.length; if (dialog.kind === 'effort' && dialog.choices[dialog.selected].value === 'ultracode') dialog.ultra = true; this.drawDialog(); }
         if (key.name === 'tab' && dialog.kind === 'effort') { key.preventDefault(); dialog.ultra = !dialog.ultra; if (!dialog.ultra && dialog.choices[dialog.selected].value === 'ultracode') dialog.selected = efforts.indexOf(this.harness.config.effort); this.drawDialog(); }
-        if (key.name === 'tab' && dialog.kind === 'choose') { key.preventDefault(); dialog.selected = (dialog.selected + 1) % dialog.choices.length; this.drawDialog(); }
+        if (key.name === 'tab' && dialog.kind === 'choose') { key.preventDefault(); dialog.selected = choices.length ? (dialog.selected + 1) % choices.length : 0; this.drawDialog(); }
       }
       return;
+    }
+    const suggestions = this.suggestions();
+    if (suggestions.length && !key.ctrl && !key.meta && !key.shift) {
+      if (key.name === 'up' || key.name === 'down') { key.preventDefault(); key.stopPropagation(); this.completionIndex = (this.completionIndex + (key.name === 'up' ? -1 : 1) + suggestions.length) % suggestions.length; this.drawCompletions(); return; }
+      if (key.name === 'tab' || key.name === 'return') { key.preventDefault(); key.stopPropagation(); this.acceptCompletion(suggestions[this.completionIndex % suggestions.length], key.name === 'return'); return; }
+      if (key.name === 'escape') { key.preventDefault(); key.stopPropagation(); this.dismissedQuery = this.input.plainText; this.drawCompletions(); return; }
     }
     if (key.ctrl && (key.name === 'y' || key.name === 'n')) {
       key.preventDefault(); const pending = [...this.harness.permissions.pending.values()][0];
       if (pending) this.harness.permissions.answer(pending.request.id, key.name === 'y'); return;
     }
-    if (key.ctrl && key.name === 'p') { key.preventDefault(); void this.choose('Commands', commands.map(value => ({ label: value, value }))).then(value => this.command(value)).catch(error => this.harness.notice(error.message)); }
+    if (key.ctrl && key.name === 'p') { key.preventDefault(); void this.commandPalette().catch(() => {}); }
     else if (key.ctrl && key.name === 'e') { key.preventDefault(); void this.effort().catch(() => {}); }
     else if (key.ctrl && key.name === 't') { key.preventDefault(); this.details = !this.details; this.render(); }
     else if (key.name === 'tab' && key.shift) {
@@ -251,10 +270,40 @@ export class TerminalUI {
     else if ((key.name === 'up' || key.name === 'down') && (key.ctrl || !this.input.plainText)) {
       key.preventDefault(); this.historyIndex = Math.max(0, Math.min(this.historyItems.length, this.historyIndex + (key.name === 'up' ? -1 : 1)));
       this.input.setText(this.historyItems[this.historyIndex] ?? '');
-    } else if (key.name === 'tab' && this.input.plainText.startsWith('/')) {
-      const completion = commands.find(command => command.startsWith(this.input.plainText));
-      if (completion) { key.preventDefault(); this.input.setText(completion + ' '); }
     }
+  }
+  private suggestions(): Choice[] {
+    const text = this.input.plainText;
+    if (this.dialog || !text.startsWith('/') || text.includes('\n') || this.dismissedQuery === text) return [];
+    const space = text.indexOf(' ');
+    if (space < 0) return match(commands, text, item => item.name).map(item => ({ label: item.name, detail: item.description, value: item.name }));
+    const command = commands.find(item => item.name === text.slice(0, space));
+    const query = text.slice(space + 1);
+    if (query.includes(' ')) return [];
+    const providers = this.harness.runtime.getProviders();
+    const values = command?.name === '/apikey' ? [...providers.filter(item => item.auth.apiKey?.login).map(item => item.id), 'tinyfish'] : command?.name === '/login' || command?.name === '/logout' ? providers.map(item => item.id) : command?.children ?? [];
+    return match(values, query, value => value).map(value => ({ label: `${command!.name} ${value}`, value: `${command!.name} ${value}` }));
+  }
+  private drawCompletions() {
+    const choices = this.suggestions();
+    this.completions.visible = choices.length > 0;
+    if (!choices.length) return;
+    const selected = this.completionIndex % choices.length;
+    const count = Math.max(1, Math.min(7, this.renderer.height - 12));
+    const begin = Math.max(0, selected - count + 1);
+    this.completionText.content = new StyledText([...choices.slice(begin, begin + count).map((choice, i) => fg(i + begin === selected ? p.primary : p.text)(`${i + begin === selected ? '›' : ' '} ${choice.label}${choice.detail ? '  ' + choice.detail : ''}\n`)), fg(p.muted)('↑↓ select · Tab complete · Enter choose · Esc dismiss')]);
+  }
+  private acceptCompletion(choice: Choice, execute: boolean) {
+    const command = commands.find(item => item.name === choice.value.split(' ')[0]);
+    if (execute && !command?.usage) { this.input.setText(choice.value); this.dismissedQuery = choice.value; void this.submit(); }
+    else { this.input.setText(choice.value + ' '); this.dismissedQuery = this.input.plainText; this.schedule(); }
+  }
+  private async commandPalette() {
+    const value = await this.choose('Commands', commands.map(item => ({ label: item.name, detail: item.description, value: item.name })));
+    this.acceptCompletion({ label: value, value }, true);
+  }
+  private dialogChoices(dialog: Dialog) {
+    return dialog.kind === 'choose' ? match(dialog.choices, dialog.query ?? '', item => `${item.label} ${item.detail ?? ''}`) : dialog.choices;
   }
   private choose(title: string, choices: Choice[], selected = 0) {
     if (!choices.length) return Promise.reject(new Error('No options available'));
@@ -265,27 +314,31 @@ export class TerminalUI {
     this.input.blur(); this.modalInput.value = ''; this.secretValue = '';
     return new Promise<string>((resolve, reject) => {
       this.dialog = { ...dialog, resolve, reject }; this.drawDialog();
-      if (dialog.kind === 'input') this.modalInput.focus();
+      if (dialog.kind !== 'effort') this.modalInput.focus();
     });
   }
   private drawDialog() {
     const dialog = this.dialog;
     this.modal.visible = Boolean(dialog);
     if (!dialog) return;
-    this.modalTitle.content = `${dialog.title}\nEnter confirm · Esc close`;
-    this.modalInput.visible = dialog.kind === 'input';
+    this.modalTitle.content = dialog.kind === 'effort' ? 'Reasoning effort · ← → change · Tab Ultracode' : `${dialog.title} · Enter confirm · Esc close`;
+    this.modalTitle.marginBottom = 0; this.modalTitle.truncate = true;
+    this.modalList.wrapMode = dialog.kind === 'choose' ? 'none' : 'word';
+    this.modalInput.visible = dialog.kind !== 'effort';
+    this.modalInput.placeholder = dialog.kind === 'choose' ? 'Search…' : dialog.secret ? 'API key (hidden)' : 'Type here…';
     this.secretMask.visible = false;
     this.modalInput.textColor = p.text;
     this.modalInput.focusedTextColor = p.text;
     if (dialog.kind === 'input') this.modalList.content = '';
     else if (dialog.kind === 'effort') {
-      const track = this.renderer.width >= 80 ? `${dialog.choices.map((_item, i) => i === dialog.selected ? '  ●     ' : '  ─     ').join('')}\n${dialog.choices.map(item => item.label.padEnd(8)).join('')}\n\n` : '';
+      const track = this.main.width >= 70 ? `${dialog.choices.map((_item, i) => i === dialog.selected ? '  ●     ' : '  ─     ').join('')}\n${dialog.choices.map(item => item.label.padEnd(8)).join('')}\n` : '';
       const selected = dialog.choices[dialog.selected].value;
-      const info = `${track}Selected: ${selected}\nActual model effort: ${this.harness.session?.thinkingLevel ?? 'off'}\nUltracode: ${dialog.ultra ? 'ON' : 'OFF'} · Tab toggles orchestration.`;
+      const info = `${track}Selected: ${selected} · model: ${this.harness.session?.thinkingLevel ?? 'off'}\nUltracode: ${dialog.ultra ? 'ON' : 'OFF'} · Enter apply · Esc close`;
       this.modalList.content = dialog.ultra ? t`${fg(rainbow[this.phase % rainbow.length])(info)}` : info;
     } else {
-      const begin = Math.max(0, dialog.selected - 5);
-      this.modalList.content = dialog.choices.slice(begin, begin + 12).map((choice, i) => `${begin + i === dialog.selected ? '›' : ' '} ${choice.label}${choice.detail ? `  ${choice.detail}` : ''}`).join('\n');
+      const count = Math.max(1, Math.min(8, this.renderer.height - 14));
+      const begin = Math.max(0, dialog.selected - count + 1);
+      this.modalList.content = this.dialogChoices(dialog).length ? new StyledText(this.dialogChoices(dialog).slice(begin, begin + count).map((choice, i) => fg(begin + i === dialog.selected ? p.primary : p.text)(`${begin + i === dialog.selected ? '›' : ' '} ${choice.label}${choice.detail ? `  ${choice.detail}` : ''}\n`))) : 'No matches';
     }
   }
   private finishDialog(value?: string) {
@@ -312,16 +365,28 @@ export class TerminalUI {
   }
   async command(text: string) {
     const space = text.indexOf(' ');
-    const command = space < 0 ? text : text.slice(0, space);
-    const args = space < 0 ? '' : text.slice(space + 1).trim();
+    const raw = space < 0 ? text : text.slice(0, space);
+    const command = ({ '/model': '/models', '/exit': '/quit', '/connect': '/login', '/keys': '/apikey', '/clear': '/new', '/sessions': '/resume' } as Record<string, string>)[raw] ?? raw;
+    let args = space < 0 ? '' : text.slice(space + 1).trim();
     const h = this.harness;
     if (command === '/quit') { this.quit(); return; }
-    if (command === '/help') { h.notice(commands.join('\n') + '\n\n/terminal start COMMAND | read ID | stop ID | send ID TEXT\n/workflow run FILE | show ID | resume ID | cancel ID\n/subagent [worktree] PROMPT\n/approval ask | auto | plan'); return; }
+    if (command === '/stop') { await h.abort(); return; }
+    if (command === '/rename') { const name = args || await this.showDialog({ kind: 'input', title: 'Session name', choices: [], selected: 0 }); if (!name.trim()) throw new Error('Session name cannot be empty'); h.session!.setSessionName(name.trim()); this.render(); return; }
+    if (command === '/commands') { await this.commandPalette(); return; }
+    if (command === '/animations') { const mode = args || await this.choose('Animations', ['on', 'off'].map(value => ({ label: value, value }))); if (!['on', 'off'].includes(mode)) throw new Error('Choose on or off'); h.config.reducedMotion = mode === 'off'; await saveConfig(h.config, h.home); this.render(); return; }
+    if (command === '/help') { h.notice(commands.map(item => `${item.name}  ${item.description}`).join('\n') + '\n\n/terminal start COMMAND | read ID | stop ID | send ID TEXT\n/workflow run FILE | show ID | resume ID | cancel ID\n/subagent [worktree] PROMPT\n/approval ask | auto | plan'); return; }
     if (command === '/models') {
       const available = new Set(h.runtime.getAvailableSnapshot().map(model => `${model.provider}/${model.id}`));
       const all = h.runtime.getModels();
       const value = args || await this.choose('Pi models · connected providers first', [...all].sort((a, b) => Number(available.has(`${b.provider}/${b.id}`)) - Number(available.has(`${a.provider}/${a.id}`))).map(model => ({ label: `${model.provider}/${model.id}`, detail: available.has(`${model.provider}/${model.id}`) ? 'connected' : 'login required', value: `${model.provider}/${model.id}` })));
       await h.setModel(value); return;
+    }
+    if (command === '/apikey') {
+      if (args.includes(' ')) throw new Error('Use /apikey PROVIDER, then enter the key in the masked prompt.');
+      const provider = args || await this.choose('API key provider', [...h.runtime.getProviders().filter(provider => provider.auth.apiKey?.login).map(provider => ({ label: provider.name, value: provider.id })), { label: 'TinyFish search', value: 'tinyfish' }]);
+      if (provider === 'tinyfish') { const key = await this.authPrompt({ type: 'secret', message: 'TinyFish API key' }); if (!key.trim()) throw new Error('API key cannot be empty'); await h.tinyfish.saveKey(h.home, key.trim()); h.notice('TinyFish connected'); }
+      else { if (!h.runtime.getProvider(provider)?.auth.apiKey?.login) throw new Error('Provider does not support API-key login'); await h.login(provider, 'api_key', { signal: new AbortController().signal, prompt: prompt => this.authPrompt(prompt), notify: event => { if (event.type !== 'auth_url' && event.type !== 'device_code') h.notice(event.message); } }); }
+      return;
     }
     if (command === '/login') {
       if (h.busy) throw new Error('Cancel the current turn before logging in');
@@ -355,7 +420,7 @@ export class TerminalUI {
     if (command === '/context') { h.notice(JSON.stringify({ model: h.session?.model?.id, effort: h.session?.thinkingLevel, usage: h.session?.getContextUsage(), stats: h.session?.getSessionStats(), extensions: 0 }, null, 2)); return; }
     if (command === '/export') { const path = h.session!.exportToJsonl(args ? resolve(h.cwd, args) : undefined); h.notice(`Exported ${path}`); return; }
     if (command === '/diff') { h.notice(await h.diff()); return; }
-    if (command === '/tasks') { this.details = !this.details; if (this.renderer.width < 90) h.notice(this.taskSummary()); this.render(); return; }
+    if (command === '/tasks' || command === '/sidebar') { this.details = command === '/sidebar' ? !this.details : true; if (this.renderer.width < 90) h.notice(this.taskSummary()); this.render(); return; }
     if (command === '/todos') { h.notice(h.todos.items.map(item => `${item.status} ${item.id}: ${item.text}`).join('\n') || 'No task list for this session'); return; }
     if (command === '/mcp') {
       const [action, name] = args.split(/\s+/, 2);
@@ -374,6 +439,7 @@ export class TerminalUI {
     }
     if (command === '/workflows') { h.notice((await h.workflows.listSaved()).map(run => `${run.id} ${run.status} ${run.definition.name}`).join('\n') || 'No saved workflows'); return; }
     if (command === '/workflow') {
+      if (!args) { const action = await this.choose('Workflow action', ['run', 'resume', 'show', 'cancel'].map(value => ({ label: value, value }))); const value = action === 'run' ? await this.showDialog({ kind: 'input', title: 'Workflow JSON file', choices: [], selected: 0 }) : await this.choose('Saved workflows', (await h.workflows.listSaved()).map(run => ({ label: `${run.id} ${run.definition.name}`, detail: run.status, value: run.id }))); args = `${action} ${value}`; }
       const [action, value] = args.split(/\s+/, 2);
       if (action === 'run' && value) h.notice(`Started workflow ${await h.launchWorkflow(JSON.parse(await readFile(resolve(h.cwd, value), 'utf8')))}`);
       else if (action === 'resume' && value) void h.workflows.resume(value, h.cwd).then(run => h.notice(JSON.stringify(run.results, null, 2))).catch(error => h.notice(error.message));
@@ -391,8 +457,10 @@ export class TerminalUI {
       ] })}`); return;
     }
     if (command === '/terminal') {
+      if (!args) { const action = await this.choose('Background terminal', ['start', 'list', 'read', 'stop', 'send'].map(value => ({ label: value, value }))); const value = action === 'list' ? '' : action === 'start' ? await this.showDialog({ kind: 'input', title: 'Shell command', choices: [], selected: 0 }) : await this.choose('Terminal jobs', [...h.terminals.jobs.values()].map(job => ({ label: `${job.id} ${job.command}`, detail: job.status, value: job.id }))); args = `${action} ${value}`; if (action === 'send') args += ' ' + await this.showDialog({ kind: 'input', title: 'Send to terminal', choices: [], selected: 0 }); }
       const separator = args.indexOf(' '); const action = separator < 0 ? args : args.slice(0, separator); const value = separator < 0 ? '' : args.slice(separator + 1);
-      if (action === 'start' && value) { await h.permissions.require('terminal_start', { command: value }); const job = h.terminals.start(value, h.cwd); h.notice(`Terminal ${job.id} started`); }
+      if (action === 'list') { h.notice([...h.terminals.jobs.values()].map(job => `${job.id} ${job.status} ${job.command}`).join('\n') || 'No terminal jobs'); }
+      else if (action === 'start' && value) { await h.permissions.require('terminal_start', { command: value }); const job = h.terminals.start(value, h.cwd); h.notice(`Terminal ${job.id} started`); }
       else if (action === 'stop') h.terminals.stop(value);
       else if (action === 'read') { const job = h.terminals.get(value); h.notice(`${job.id} ${job.status} exit=${job.exitCode}\n${job.output}`); }
       else if (action === 'send') { const i = value.indexOf(' '); await h.permissions.require('terminal_send', value); h.terminals.send(value.slice(0, i), value.slice(i + 1) + '\n'); }
