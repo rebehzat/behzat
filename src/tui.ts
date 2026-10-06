@@ -9,16 +9,17 @@ import type { AuthPrompt } from '@earendil-works/pi-ai';
 import { Harness } from './harness.ts';
 import { efforts, saveConfig, stateDir, type Effort } from './config.ts';
 import { palette as p, rainbow, cleanTerminalText } from './theme.ts';
+import type { Question } from './questions.ts';
 
 interface Choice { label: string; detail?: string; value: string }
 interface Dialog {
   kind: 'choose' | 'input' | 'effort'; title: string; choices: Choice[]; selected: number;
-  secret?: boolean; resolve: (value: string) => void; reject: (error: Error) => void;
+  secret?: boolean; ultra?: boolean; resolve: (value: string) => void; reject: (error: Error) => void;
 }
 const commands = [
   '/models', '/login', '/logout', '/effort', '/ultracode', '/approval', '/new', '/resume', '/fork',
   '/compact', '/context', '/export', '/diff', '/tasks', '/subagent', '/workflow', '/workflows',
-  '/deep-research', '/terminal', '/skill', '/help', '/quit',
+  '/deep-research', '/terminal', '/skill', '/todos', '/mcp', '/help', '/quit',
 ];
 
 export class TerminalUI {
@@ -37,6 +38,7 @@ export class TerminalUI {
   private modalInput: InputRenderable;
   private secretMask: TextRenderable;
   private dialog?: Dialog;
+  private presentingQuestion = false;
   private secretValue = '';
   private details = false;
   private phase = 0;
@@ -163,15 +165,34 @@ export class TerminalUI {
       this.hints.fg = p.muted;
     }
     this.drawDialog();
+    if (!this.dialog && !this.presentingQuestion && h.questions.pending.size) {
+      const question = [...h.questions.pending.values()][0].question;
+      void this.showQuestion(question);
+    }
+  }
+  private async showQuestion(question: Question) {
+    this.presentingQuestion = true;
+    this.harness.notice(question.text);
+    try {
+      const custom = '__behzat_custom_answer__';
+      let answer = question.options.length ? await this.choose(cleanTerminalText(question.text).slice(0, 160), [...question.options.map((label, i) => ({ label: cleanTerminalText(label), value: String(i) })), { label: 'Type an answer…', value: custom }]) : custom;
+      if (answer === custom) answer = await this.showDialog({ kind: 'input', title: 'Your answer', choices: [], selected: 0 });
+      else answer = question.options[Number(answer)];
+      this.harness.questions.answer(question.id, answer);
+    } catch { this.harness.questions.answer(question.id); }
+    finally { this.presentingQuestion = false; this.schedule(); }
   }
   private selectSlider(x: number) {
     if (this.dialog?.kind !== 'effort') return;
     this.dialog.selected = Math.max(0, Math.min(this.dialog.choices.length - 1, Math.floor((x - this.modalList.x) / 8)));
+    if (this.dialog.choices[this.dialog.selected].value === 'ultracode') this.dialog.ultra = true;
     this.drawDialog();
   }
   private taskSummary() {
     const h = this.harness;
     const sections: string[] = [];
+    if (h.todos.items.length) sections.push('TASK LIST\n' + h.todos.items.map(item => `${item.status === 'done' ? '✓' : item.status === 'in_progress' ? '●' : '○'} ${item.text}`).join('\n'));
+    if (h.mcp.connections.size) sections.push('MCP\n' + [...h.mcp.connections].map(([name, connection]) => `${name} · ${connection.tools.length} tools`).join('\n'));
     if (h.permissions.pending.size) sections.push('APPROVALS\n' + [...h.permissions.pending.values()].map(({ request }) => `${request.tool}\n${JSON.stringify(request.input).slice(0, 1500)}`).join('\n\n'));
     if (h.workflows.runs.size) sections.push('WORKFLOWS\n' + [...h.workflows.runs.values()].slice(-5).map(run => `${run.id.slice(0, 8)} ${run.definition.name}\n${run.status} · ${Object.values(run.results).filter(result => result.status === 'done').length}/${run.definition.stages.length}`).join('\n\n'));
     if (h.tasks.size) sections.push('SUBAGENTS\n' + [...h.tasks.values()].slice(-8).map(task => `${task.id} ${task.status}\n${task.prompt.slice(0, 70)}`).join('\n\n'));
@@ -189,7 +210,12 @@ export class TerminalUI {
     if (this.dialog) {
       const dialog = this.dialog;
       if (key.name === 'escape' || (key.ctrl && key.name === 'c')) { key.preventDefault(); this.finishDialog(undefined); return; }
-      if (key.name === 'return') { key.preventDefault(); this.finishDialog(dialog.kind === 'input' ? (dialog.secret ? this.secretValue : this.modalInput.value) : dialog.choices[dialog.selected]?.value); return; }
+      if (key.name === 'return') {
+        key.preventDefault();
+        const value = dialog.choices[dialog.selected]?.value;
+        this.finishDialog(dialog.kind === 'input' ? (dialog.secret ? this.secretValue : this.modalInput.value) : dialog.kind === 'effort' ? JSON.stringify({ effort: value === 'ultracode' ? 'xhigh' : value, ultra: Boolean(dialog.ultra) }) : value);
+        return;
+      }
       if (dialog.secret) {
         key.preventDefault();
         if (key.name === 'backspace') this.secretValue = this.secretValue.slice(0, -1);
@@ -201,7 +227,8 @@ export class TerminalUI {
       }
       if (dialog.kind !== 'input') {
         const direction = key.name === 'up' || key.name === 'left' ? -1 : key.name === 'down' || key.name === 'right' ? 1 : 0;
-        if (direction) { key.preventDefault(); dialog.selected = (dialog.selected + direction + dialog.choices.length) % dialog.choices.length; this.drawDialog(); }
+        if (direction) { key.preventDefault(); dialog.selected = (dialog.selected + direction + dialog.choices.length) % dialog.choices.length; if (dialog.kind === 'effort' && dialog.choices[dialog.selected].value === 'ultracode') dialog.ultra = true; this.drawDialog(); }
+        if (key.name === 'tab' && dialog.kind === 'effort') { key.preventDefault(); dialog.ultra = !dialog.ultra; if (!dialog.ultra && dialog.choices[dialog.selected].value === 'ultracode') dialog.selected = efforts.indexOf(this.harness.config.effort); this.drawDialog(); }
         if (key.name === 'tab' && dialog.kind === 'choose') { key.preventDefault(); dialog.selected = (dialog.selected + 1) % dialog.choices.length; this.drawDialog(); }
       }
       return;
@@ -216,7 +243,7 @@ export class TerminalUI {
     else if (key.name === 'tab' && key.shift) {
       key.preventDefault(); const modes = ['ask', 'auto', 'plan'] as const;
       this.harness.permissions.mode = modes[(modes.indexOf(this.harness.permissions.mode) + 1) % modes.length];
-      this.harness.config.approval = this.harness.permissions.mode; void saveConfig(this.harness.config); this.render();
+      this.harness.config.approval = this.harness.permissions.mode; void saveConfig(this.harness.config, this.harness.home).catch(error => this.harness.notice(error.message)); this.render();
     } else if (key.name === 'escape') { key.preventDefault(); void this.harness.abort(); }
     else if (key.ctrl && key.name === 'c') {
       key.preventDefault(); if (this.harness.busy || this.activeTasks()) void this.harness.abort(); else this.quit();
@@ -254,8 +281,8 @@ export class TerminalUI {
     else if (dialog.kind === 'effort') {
       const track = this.renderer.width >= 80 ? `${dialog.choices.map((_item, i) => i === dialog.selected ? '  ●     ' : '  ─     ').join('')}\n${dialog.choices.map(item => item.label.padEnd(8)).join('')}\n\n` : '';
       const selected = dialog.choices[dialog.selected].value;
-      const info = `${track}Selected: ${selected}\nActual model effort: ${this.harness.session?.thinkingLevel ?? 'off'}\nUltracode adds automatic workflow orchestration.`;
-      this.modalList.content = selected === 'ultracode' ? t`${fg(rainbow[this.phase % rainbow.length])(info)}` : info;
+      const info = `${track}Selected: ${selected}\nActual model effort: ${this.harness.session?.thinkingLevel ?? 'off'}\nUltracode: ${dialog.ultra ? 'ON' : 'OFF'} · Tab toggles orchestration.`;
+      this.modalList.content = dialog.ultra ? t`${fg(rainbow[this.phase % rainbow.length])(info)}` : info;
     } else {
       const begin = Math.max(0, dialog.selected - 5);
       this.modalList.content = dialog.choices.slice(begin, begin + 12).map((choice, i) => `${begin + i === dialog.selected ? '›' : ' '} ${choice.label}${choice.detail ? `  ${choice.detail}` : ''}`).join('\n');
@@ -266,11 +293,13 @@ export class TerminalUI {
     if (!dialog) return;
     this.dialog = undefined; this.modalInput.value = ''; this.secretValue = ''; this.modalInput.blur(); this.modal.visible = false; this.input.focus();
     if (value !== undefined) dialog.resolve(value); else dialog.reject(new Error('Cancelled'));
+    this.schedule();
   }
   private async effort() {
     const choices = [...efforts.map(value => ({ label: value, value })), { label: 'ultra', value: 'ultracode' }];
-    const value = await this.showDialog({ kind: 'effort', title: 'Reasoning effort · ← → or click the slider', choices, selected: this.harness.ultracode ? choices.length - 1 : efforts.indexOf(this.harness.config.effort) });
-    await this.harness.setEffort(value === 'ultracode' ? 'xhigh' : value as Effort, value === 'ultracode');
+    const value = await this.showDialog({ kind: 'effort', title: 'Reasoning effort · ← → or click the slider', choices, selected: efforts.indexOf(this.harness.config.effort), ultra: this.harness.ultracode });
+    const selection = JSON.parse(value) as { effort: Effort; ultra: boolean };
+    await this.harness.setEffort(selection.effort, selection.ultra);
   }
   private async authPrompt(prompt: AuthPrompt) {
     if (prompt.signal?.aborted) throw new Error('Login cancelled');
@@ -312,12 +341,12 @@ export class TerminalUI {
       } }); return;
     }
     if (command === '/logout') { const provider = args || await this.choose('Disconnect provider', h.runtime.getProviders().map(provider => ({ label: provider.name, value: provider.id }))); await h.runtime.logout(provider); h.notice(`Disconnected ${provider}`); return; }
-    if (command === '/effort') { if (!args) await this.effort(); else if (args === 'ultracode') await h.setEffort('xhigh', true); else if (efforts.includes(args as Effort)) await h.setEffort(args as Effort); else throw new Error('Unknown effort'); return; }
+    if (command === '/effort') { if (!args) await this.effort(); else if (args === 'ultracode' || args === 'ultracode off') await h.setEffort(h.config.effort, args === 'ultracode'); else if (efforts.includes(args as Effort)) await h.setEffort(args as Effort); else throw new Error('Unknown effort'); return; }
     if (command === '/ultracode') { h.ultracode = args === 'on' || (args !== 'off' && !h.ultracode); this.render(); return; }
     if (command === '/approval') {
       const mode = args || await this.choose('Tool approval mode', ['ask', 'auto', 'plan'].map(value => ({ label: value, value })));
       if (!['ask', 'auto', 'plan'].includes(mode)) throw new Error('Choose ask, auto, or plan');
-      h.permissions.mode = mode as 'ask' | 'auto' | 'plan'; h.config.approval = h.permissions.mode; await saveConfig(h.config); this.render(); return;
+      h.permissions.mode = mode as 'ask' | 'auto' | 'plan'; h.config.approval = h.permissions.mode; await saveConfig(h.config, h.home); this.render(); return;
     }
     if (command === '/new') { await h.newSession(); return; }
     if (command === '/resume') { const path = args || await this.choose('Resume session', (await h.sessions()).map(session => ({ label: session.name ?? session.firstMessage.slice(0, 80), detail: session.modified.toLocaleString(), value: session.path }))); await h.resume(path); return; }
@@ -327,6 +356,16 @@ export class TerminalUI {
     if (command === '/export') { const path = h.session!.exportToJsonl(args ? resolve(h.cwd, args) : undefined); h.notice(`Exported ${path}`); return; }
     if (command === '/diff') { h.notice(await h.diff()); return; }
     if (command === '/tasks') { this.details = !this.details; if (this.renderer.width < 90) h.notice(this.taskSummary()); this.render(); return; }
+    if (command === '/todos') { h.notice(h.todos.items.map(item => `${item.status} ${item.id}: ${item.text}`).join('\n') || 'No task list for this session'); return; }
+    if (command === '/mcp') {
+      const [action, name] = args.split(/\s+/, 2);
+      if (action === 'connect' && name) { await h.connectMcp(name); h.notice(`Connected MCP ${name} · ${h.mcp.tools(name).length} tools`); }
+      else if (action === 'disconnect' && name) { await h.mcp.disconnect(name); h.notice(`Disconnected MCP ${name}`); }
+      else if (action === 'tools') h.notice(JSON.stringify(h.mcp.tools(name), null, 2));
+      else if (!action || action === 'list') h.notice(Object.keys(await h.mcp.configured()).map(id => `${id} ${h.mcp.connections.has(id) ? 'connected' : 'disconnected'}`).join('\n') || `Configure servers in ${join(h.home, 'mcp.json')}`);
+      else throw new Error('Usage: /mcp list | connect NAME | disconnect NAME | tools [NAME]');
+      return;
+    }
     if (command === '/subagent') {
       const worktree = args.startsWith('worktree ');
       const prompt = worktree ? args.slice(9) : args;

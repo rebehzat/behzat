@@ -31,6 +31,6 @@ export async function atomicJson(path: string, value: unknown) {
   await writeFile(temporary, JSON.stringify(value, null, 2) + '\n', { mode: 0o600 });
   await rename(temporary, path);
 }
-export async function saveConfig(config: Config) {
-  await atomicJson(join(stateDir(), 'config.json'), Config.parse(config));
+export async function saveConfig(config: Config, directory = stateDir()) {
+  await atomicJson(join(directory, 'config.json'), Config.parse(config));
 }

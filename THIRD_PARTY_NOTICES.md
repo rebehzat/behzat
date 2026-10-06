@@ -72,6 +72,10 @@ The binary contains the Bun runtime (MIT); its license is at https://github.com/
 
 | @google/genai | 2.21.0 | Apache-2.0 |
 
+| @modelcontextprotocol/client | 2.3.1 | Apache-2.0 |
+
+| @modelcontextprotocol/core | 2.3.1 | Apache-2.0 |
+
 | @opentui/core | 0.5.14 | MIT |
 
 | @opentui/core-linux-x64 | 0.5.14 | MIT |
@@ -154,6 +158,10 @@ The binary contains the Bun runtime (MIT); its license is at https://github.com/
 
 | esbuild | 0.28.2 | MIT |
 
+| eventsource | 3.0.7 | MIT |
+
+| eventsource-parser | 3.1.1 | MIT |
+
 | extend | 3.0.2 | MIT |
 
 | fast-sha256 | 1.3.0 | Unlicense |
@@ -190,6 +198,8 @@ The binary contains the Bun runtime (MIT); its license is at https://github.com/
 
 | jiti | 2.7.0 | MIT |
 
+| jose | 6.2.12 | MIT |
+
 | json-bigint | 1.0.0 | MIT |
 
 | json-schema-to-ts | 3.1.1 | MIT |
@@ -219,6 +229,8 @@ The binary contains the Bun runtime (MIT); its license is at https://github.com/
 | partial-json | 0.1.7 | MIT |
 
 | path-key | 3.1.1 | MIT |
+
+| pkce-challenge | 5.0.1 | MIT |
 
 | proper-lockfile | 4.1.2 | MIT |
 
