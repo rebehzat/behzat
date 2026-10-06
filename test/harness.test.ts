@@ -6,7 +6,7 @@ import { Harness } from '../src/harness.ts';
 import { Config } from '../src/config.ts';
 import { loadPi } from '../src/pi.ts';
 
-async function fixture(approval: 'ask' | 'auto' | 'plan', workflow = false) {
+async function fixture(approval: 'ask' | 'auto' | 'plan', workflow = false, tool = 'write') {
   const directory = await mkdtemp(join(tmpdir(), 'behzat-harness-'));
   let requests = 0;
   const bodies: unknown[] = [];
@@ -23,7 +23,7 @@ async function fixture(approval: 'ask' | 'auto' | 'plan', workflow = false) {
         : completed ? { content: 'Waiting for workflow report.' }
         : initial ? { tool_calls: [{ index: 0, id: 'workflow-1', type: 'function', function: { name: 'workflow_run', arguments: JSON.stringify({ name: 'review', stages: [{ id: 'inspect', prompt: 'Inspect the code' }] }) } }] }
         : { content: 'Independent verified finding.' }
-      : completed ? { content: 'The tool result has been checked.' } : { tool_calls: [{ index: 0, id: 'write-1', type: 'function', function: { name: 'write', arguments: JSON.stringify({ path: 'result.txt', content: 'verified write' }) } }] };
+      : completed ? { content: 'The tool result has been checked.' } : { tool_calls: [{ index: 0, id: 'call-1', type: 'function', function: { name: tool, arguments: JSON.stringify(tool === 'write' ? { path: 'result.txt', content: 'verified write' } : { server: 'fixture', tool: 'echo', input: { text: 'hello' } }) } }] };
     const chunks = [
       { id: 'fake', object: 'chat.completion.chunk', choices: [{ index: 0, delta, finish_reason: null }] },
       { id: 'fake', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' in delta ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } },
@@ -56,17 +56,22 @@ test('Ultracode workflow runs real subagents and synthesizes without recursively
 });
 
 test('real Pi tool dispatch cannot bypass ask or plan guards', async () => {
+  for (const tool of ['write', 'mcp_call']) {
   for (const mode of ['ask', 'plan'] as const) {
-    const fixtureRun = await fixture(mode);
+    const fixtureRun = await fixture(mode, false, tool);
     try {
+      let remoteCalls = 0;
+      fixtureRun.harness.mcp.call = async () => { remoteCalls++; return 'Should not execute'; };
       let approvals = 0;
       fixtureRun.harness.permissions.on('request', request => { approvals++; fixtureRun.harness.permissions.answer(request.id, false); });
       await fixtureRun.harness.prompt('Write result.txt');
       expect(await Bun.file(join(fixtureRun.directory, 'result.txt')).exists()).toBe(false);
       expect(approvals).toBe(mode === 'ask' ? 1 : 0);
+      expect(remoteCalls).toBe(0);
       expect(fixtureRun.requests()).toBe(2);
       expect(fixtureRun.harness.session!.getLastAssistantText()).toContain('checked');
     } finally { await fixtureRun.close(); }
+  }
   }
 });
 

@@ -75,3 +75,20 @@ test('provider dialog preserves Pi provider list and secret entry is visually ma
     expect(view.harness.entries.some(entry => entry.text.includes('private-test-key'))).toBe(false);
   } finally { await view.cleanup(); }
 });
+
+test('agent question dialog accepts a suggested answer and dismisses cancellation', async () => {
+  const view = await setup();
+  try {
+    const answer = view.harness.questions.ask('Which test scope?', ['Unit', 'Integration']);
+    await Bun.sleep(25); await view.renderOnce();
+    expect(view.captureCharFrame()).toContain('Which test scope?');
+    view.mockInput.pressArrow('down'); view.mockInput.pressEnter();
+    expect(await answer).toBe('Integration');
+    await Bun.sleep(25);
+    const declined = view.harness.questions.ask('Another question?').catch(error => error as Error);
+    await Bun.sleep(25); view.mockInput.pressEscape();
+    const error = await declined;
+    if (!(error instanceof Error)) throw new Error('Expected question cancellation');
+    expect(error.message).toBe('User declined to answer');
+  } finally { await view.cleanup(); }
+});

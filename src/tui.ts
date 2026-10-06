@@ -9,6 +9,7 @@ import type { AuthPrompt } from '@earendil-works/pi-ai';
 import { Harness } from './harness.ts';
 import { efforts, saveConfig, stateDir, type Effort } from './config.ts';
 import { palette as p, rainbow, cleanTerminalText } from './theme.ts';
+import type { Question } from './questions.ts';
 
 interface Choice { label: string; detail?: string; value: string }
 interface Dialog {
@@ -18,7 +19,7 @@ interface Dialog {
 const commands = [
   '/models', '/login', '/logout', '/effort', '/ultracode', '/approval', '/new', '/resume', '/fork',
   '/compact', '/context', '/export', '/diff', '/tasks', '/subagent', '/workflow', '/workflows',
-  '/deep-research', '/terminal', '/skill', '/help', '/quit',
+  '/deep-research', '/terminal', '/skill', '/todos', '/mcp', '/help', '/quit',
 ];
 
 export class TerminalUI {
@@ -37,6 +38,7 @@ export class TerminalUI {
   private modalInput: InputRenderable;
   private secretMask: TextRenderable;
   private dialog?: Dialog;
+  private presentingQuestion = false;
   private secretValue = '';
   private details = false;
   private phase = 0;
@@ -163,6 +165,22 @@ export class TerminalUI {
       this.hints.fg = p.muted;
     }
     this.drawDialog();
+    if (!this.dialog && !this.presentingQuestion && h.questions.pending.size) {
+      const question = [...h.questions.pending.values()][0].question;
+      void this.showQuestion(question);
+    }
+  }
+  private async showQuestion(question: Question) {
+    this.presentingQuestion = true;
+    this.harness.notice(question.text);
+    try {
+      const custom = '__behzat_custom_answer__';
+      let answer = question.options.length ? await this.choose(cleanTerminalText(question.text).slice(0, 160), [...question.options.map((label, i) => ({ label: cleanTerminalText(label), value: String(i) })), { label: 'Type an answer…', value: custom }]) : custom;
+      if (answer === custom) answer = await this.showDialog({ kind: 'input', title: 'Your answer', choices: [], selected: 0 });
+      else answer = question.options[Number(answer)];
+      this.harness.questions.answer(question.id, answer);
+    } catch { this.harness.questions.answer(question.id); }
+    finally { this.presentingQuestion = false; this.schedule(); }
   }
   private selectSlider(x: number) {
     if (this.dialog?.kind !== 'effort') return;
@@ -172,6 +190,8 @@ export class TerminalUI {
   private taskSummary() {
     const h = this.harness;
     const sections: string[] = [];
+    if (h.todos.items.length) sections.push('TASK LIST\n' + h.todos.items.map(item => `${item.status === 'done' ? '✓' : item.status === 'in_progress' ? '●' : '○'} ${item.text}`).join('\n'));
+    if (h.mcp.connections.size) sections.push('MCP\n' + [...h.mcp.connections].map(([name, connection]) => `${name} · ${connection.tools.length} tools`).join('\n'));
     if (h.permissions.pending.size) sections.push('APPROVALS\n' + [...h.permissions.pending.values()].map(({ request }) => `${request.tool}\n${JSON.stringify(request.input).slice(0, 1500)}`).join('\n\n'));
     if (h.workflows.runs.size) sections.push('WORKFLOWS\n' + [...h.workflows.runs.values()].slice(-5).map(run => `${run.id.slice(0, 8)} ${run.definition.name}\n${run.status} · ${Object.values(run.results).filter(result => result.status === 'done').length}/${run.definition.stages.length}`).join('\n\n'));
     if (h.tasks.size) sections.push('SUBAGENTS\n' + [...h.tasks.values()].slice(-8).map(task => `${task.id} ${task.status}\n${task.prompt.slice(0, 70)}`).join('\n\n'));
@@ -266,6 +286,7 @@ export class TerminalUI {
     if (!dialog) return;
     this.dialog = undefined; this.modalInput.value = ''; this.secretValue = ''; this.modalInput.blur(); this.modal.visible = false; this.input.focus();
     if (value !== undefined) dialog.resolve(value); else dialog.reject(new Error('Cancelled'));
+    this.schedule();
   }
   private async effort() {
     const choices = [...efforts.map(value => ({ label: value, value })), { label: 'ultra', value: 'ultracode' }];
@@ -327,6 +348,16 @@ export class TerminalUI {
     if (command === '/export') { const path = h.session!.exportToJsonl(args ? resolve(h.cwd, args) : undefined); h.notice(`Exported ${path}`); return; }
     if (command === '/diff') { h.notice(await h.diff()); return; }
     if (command === '/tasks') { this.details = !this.details; if (this.renderer.width < 90) h.notice(this.taskSummary()); this.render(); return; }
+    if (command === '/todos') { h.notice(h.todos.items.map(item => `${item.status} ${item.id}: ${item.text}`).join('\n') || 'No task list for this session'); return; }
+    if (command === '/mcp') {
+      const [action, name] = args.split(/\s+/, 2);
+      if (action === 'connect' && name) { await h.connectMcp(name); h.notice(`Connected MCP ${name} · ${h.mcp.tools(name).length} tools`); }
+      else if (action === 'disconnect' && name) { await h.mcp.disconnect(name); h.notice(`Disconnected MCP ${name}`); }
+      else if (action === 'tools') h.notice(JSON.stringify(h.mcp.tools(name), null, 2));
+      else if (!action || action === 'list') h.notice(Object.keys(await h.mcp.configured()).map(id => `${id} ${h.mcp.connections.has(id) ? 'connected' : 'disconnected'}`).join('\n') || `Configure servers in ${join(h.home, 'mcp.json')}`);
+      else throw new Error('Usage: /mcp list | connect NAME | disconnect NAME | tools [NAME]');
+      return;
+    }
     if (command === '/subagent') {
       const worktree = args.startsWith('worktree ');
       const prompt = worktree ? args.slice(9) : args;

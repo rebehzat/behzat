@@ -74,6 +74,7 @@ async function main() {
   await harness.initialize({ resume: values.resume, continue: values.continue });
   if (values.print !== undefined) {
     harness.permissions.on('request', request => { harness.permissions.answer(request.id, false); });
+    harness.questions.on('request', question => { harness.questions.answer(question.id); });
     harness.session!.subscribe(event => {
       if (values.json) process.stdout.write(JSON.stringify(event) + '\n');
       else if (event.type === 'message_update' && event.assistantMessageEvent.type === 'text_delta') process.stdout.write(event.assistantMessageEvent.delta);

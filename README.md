@@ -58,7 +58,7 @@ Markdown `AGENTS.md` and `CLAUDE.md` context files are still read.
 | Control | Behavior |
 | --- | --- |
 | `/models`, `/login`, `/logout` | Pi models and provider authentication |
-| `Ctrl+E`, `/effort` | Keyboard effort slider; supported effort is shown in the footer |
+| `Ctrl+E`, `/effort` | Keyboard/mouse effort slider; supported effort is shown in the footer |
 | `/effort ultracode` | Request xhigh and enable automatic workflow orchestration |
 | `/ultracode on`, `/ultracode off` | Toggle orchestration independently from model effort |
 | `Shift+Tab`, `/approval ask\|auto\|plan` | Cycle approval modes |
@@ -76,6 +76,8 @@ Markdown `AGENTS.md` and `CLAUDE.md` context files are still read.
 | `/terminal read ID`, `send ID TEXT`, `stop ID` | Inspect output, send input and terminate the process group |
 | `/skill NAME` | Read project `.behzat/skills/NAME/SKILL.md` or `.claude/skills/NAME/SKILL.md` |
 | `/tasks`, `Ctrl+T` | Task and approval details |
+| `/todos` | Persistent task list for the current conversation |
+| `/mcp list`, `connect NAME`, `disconnect NAME`, `tools [NAME]` | Explicit MCP connections and tool discovery |
 
 Shift+Enter inserts a newline. PageUp/PageDown scroll the conversation. Up from
 an empty composer recalls input. Use `--reduced-motion` to stop animations.
@@ -96,6 +98,8 @@ Ultracode tells the main agent to author a workflow for substantive tasks, with
 investigation, adversarial verification and synthesis. Selection depends on the
 model following those instructions; an explicit workflow works deterministically.
 The rainbow status appears only when the mode is on.
+Including `ultracode` in one prompt requests orchestration for that turn without
+changing the session toggle.
 
 Workflows are validated JSON DAGs, rather than Claude's arbitrary orchestration
 scripts. See `examples/review.workflow.json`. Each stage has an ID, prompt,
@@ -116,6 +120,44 @@ error to the agent.
 Background PTYs retain 128 KB of recent output. Closing Behzat stops its agents,
 workflows and terminals and saves workflow state. Background programs do not
 survive closing Behzat.
+
+## MCP, task lists and questions
+
+The official MCP client supports local stdio and remote Streamable HTTP servers.
+Create `$BEHZAT_HOME/mcp.json` (by default `~/.local/state/behzat/mcp.json`):
+
+```json
+{
+  "servers": {
+    "local-tools": {
+      "transport": "stdio",
+      "command": "my-mcp-server",
+      "args": [],
+      "env": { "API_KEY": "MY_SERVER_API_KEY" }
+    },
+    "remote-tools": {
+      "transport": "http",
+      "url": "https://example.com/mcp",
+      "headers": { "Authorization": "MY_MCP_AUTHORIZATION" }
+    }
+  }
+}
+```
+
+`env` and `headers` values are **environment variable names**, never embedded
+credentials. Set them in your shell, then `/mcp connect NAME`. Servers never
+start automatically from project configuration. Every connection and tool call
+uses the approval policy; plan mode blocks them. The agent discovers schemas
+through `mcp_tools` and calls `mcp_call`, keeping hundreds of individual schemas
+out of the normal context. Research subagents cannot access MCP tools. Stdio
+servers receive a minimal inherited environment plus explicitly configured
+variables. HTTP redirects are rejected. This release does not implement MCP
+OAuth, resource/prompt browsing, or sampling/elicitation callbacks.
+
+`todo_update` maintains a task list stored beside session state. `/todos` and the
+details panel display it, and resuming a conversation restores it. `ask_user`
+shows suggested answers with a custom-answer option. Questions are cancellable;
+headless mode declines them instead of waiting for terminal input.
 
 ## Headless use
 
@@ -142,7 +184,8 @@ testing. Behzat never writes to Pi's source checkout.
 ## Validation and limitations
 
 CI runs types, native TUI tests, fake-model tool dispatch, poisoned-extension,
-workflow recovery, TinyFish contract and PTY cancellation tests. Binary CI builds
+workflow recovery, TinyFish contract, MCP stdio/HTTP, task persistence, questions
+and PTY cancellation tests. Binary CI builds
 and smoke-tests release installation on four native platforms. Release archives
 include checksums and license notices. All implementation changes land via PRs.
 
@@ -150,7 +193,7 @@ include checksums and license notices. All implementation changes land via PRs.
 model latency are outside this benchmark; no universal lag-free guarantee or
 measured comparison with Codex is claimed. Real OAuth success and TinyFish
 account access require your own credentials and are not exercised by CI. This
-release does not include an LSP, MCP connections, Claude hooks, peer-agent teams,
+release does not include an LSP, Claude hooks, peer-agent teams,
 or arbitrary-script workflow execution.
 
 MIT license. Upstream references and exact versions are in `upstream.json`;
