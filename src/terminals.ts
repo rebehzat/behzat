@@ -1,27 +1,32 @@
 import { EventEmitter } from 'node:events';
-import { spawn, type ChildProcess } from 'node:child_process';
 import { StringDecoder } from 'node:string_decoder';
 
 export interface TerminalJob {
   id: string; command: string; cwd: string; status: 'running' | 'exited';
-  output: string; exitCode: number | null; process: ChildProcess;
+  output: string; exitCode: number | null; process: Bun.Subprocess;
+  terminal: Bun.Terminal; exited: Promise<number>;
 }
 export class Terminals extends EventEmitter {
   jobs = new Map<string, TerminalJob>();
   start(command: string, cwd: string) {
     if ([...this.jobs.values()].filter(j => j.status === 'running').length >= 8) throw new Error('Eight background terminals are already running');
-    const child = spawn(process.env.SHELL ?? '/bin/sh', ['-lc', command], {
-      cwd, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    const job: TerminalJob = { id: crypto.randomUUID().slice(0, 8), command, cwd, status: 'running', output: '', exitCode: null, process: child };
+    const decoder = new StringDecoder('utf8');
+    let output = '';
+    let job: TerminalJob | undefined;
+    const terminal = new Bun.Terminal({ cols: 120, rows: 30, data: (_terminal, bytes) => {
+      output = (output + decoder.write(Buffer.from(bytes))).slice(-128_000);
+      if (job) job.output = output;
+      this.emit('change');
+    } });
+    const child = Bun.spawn([process.env.SHELL ?? '/bin/sh', '-lc', command], { cwd, terminal, detached: true });
+    job = { id: crypto.randomUUID().slice(0, 8), command, cwd, status: 'running', output, exitCode: null, process: child, terminal, exited: child.exited };
     this.jobs.set(job.id, job);
-    for (const stream of [child.stdout, child.stderr]) {
-      const decoder = new StringDecoder('utf8');
-      stream?.on('data', (chunk: Buffer) => { job.output = (job.output + decoder.write(chunk)).slice(-128_000); this.emit('change'); });
-      stream?.on('end', () => { job.output = (job.output + decoder.end()).slice(-128_000); this.emit('change'); });
-    }
-    child.on('error', (error) => { job.output += `\n${error.message}`; this.emit('change'); });
-    child.on('close', (code) => { job.status = 'exited'; job.exitCode = code; this.emit('change'); });
+    const current = job;
+    current.exited = child.exited.then(code => {
+      current.status = 'exited'; current.exitCode = code;
+      current.output = (output + decoder.end()).slice(-128_000);
+      terminal.close(); this.emit('change'); return code;
+    });
     this.emit('change');
     return job;
   }
@@ -29,8 +34,9 @@ export class Terminals extends EventEmitter {
   send(id: string, input: string) {
     const job = this.get(id);
     if (job.status !== 'running') throw new Error('Terminal has exited');
-    job.process.stdin?.write(input);
+    job.terminal.write(input);
   }
+  resize(id: string, columns: number, rows: number) { this.get(id).terminal.resize(columns, rows); }
   stop(id: string) {
     const job = this.get(id);
     if (job.status !== 'running') return;

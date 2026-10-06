@@ -39,17 +39,17 @@ export class Harness extends EventEmitter {
   private closed = false;
   private folder: string;
 
-  constructor(readonly cwd: string, readonly config: Config) {
+  constructor(readonly cwd: string, readonly config: Config, readonly home = stateDir()) {
     super();
     this.permissions = new Permissions(config.approval);
     this.slots = new Slots(config.concurrency);
-    this.folder = join(stateDir(), 'sessions', Buffer.from(cwd).toString('base64url'));
-    this.workflows = new Workflows(join(stateDir(), 'workflows'), config.concurrency, (prompt, options) => this.runAgent(prompt, options));
+    this.folder = join(home, 'sessions', Buffer.from(cwd).toString('base64url'));
+    this.workflows = new Workflows(join(home, 'workflows'), config.concurrency, (prompt, options) => this.runAgent(prompt, options));
     for (const emitter of [this.permissions, this.terminals, this.workflows]) emitter.on('change', () => this.emit('change'));
   }
-  async initialize(options: { resume?: string; continue?: boolean } = {}) {
+  async initialize(options: { resume?: string; continue?: boolean; runtime?: ModelRuntime } = {}) {
     this.pi = await loadPi();
-    this.runtime = await this.pi.ModelRuntime.create();
+    this.runtime = options.runtime ?? await this.pi.ModelRuntime.create();
     if (this.runtime.getError()) this.notice(this.runtime.getError()!);
     const manager = options.resume ? this.pi.SessionManager.open(options.resume, this.folder, this.cwd)
       : options.continue ? this.pi.SessionManager.continueRecent(this.cwd, this.folder)
@@ -61,7 +61,7 @@ export class Harness extends EventEmitter {
     this.session?.dispose();
     const model = this.config.model ? this.findModel(this.config.model) : undefined;
     const { session, extensionsResult } = await this.pi.createAgentSession({
-      cwd: this.cwd, agentDir: stateDir(), modelRuntime: this.runtime, model,
+      cwd: this.cwd, agentDir: this.home, modelRuntime: this.runtime, model,
       thinkingLevel: this.config.effort, resourceLoader: await resources(this.pi, this.cwd),
       settingsManager: this.pi.SettingsManager.inMemory({ compaction: { enabled: true }, retry: { enabled: true, maxRetries: 2 }, cacheWarming: 'off' }),
       sessionManager: manager, tools: this.tools(this.cwd).map(tool => tool.name), customTools: this.tools(this.cwd),
@@ -123,7 +123,7 @@ export class Harness extends EventEmitter {
     await this.runtime.login(provider, type, interaction);
     this.notice(`Connected ${provider}`);
   }
-  async prompt(text: string) {
+  async prompt(text: string, orchestrate = true) {
     if (!this.session) throw new Error('Session not initialized');
     if (this.busy) {
       await this.session.followUp(text);
@@ -131,7 +131,7 @@ export class Harness extends EventEmitter {
     }
     this.busy = true; this.lastError = undefined;
     this.entries.push({ id: crypto.randomUUID(), role: 'user', text }); this.emit('change');
-    const instruction = this.ultracode
+    const instruction = this.ultracode && orchestrate
       ? '\n\n[Behzat Ultracode is enabled. For a substantive task, author and launch a workflow_run DAG with independent investigation, adversarial verification, and synthesis stages. Use worktree mode only for editing stages. For a simple task answer directly. Await background reports before claiming completion.]'
       : '';
     try { await this.session.prompt(text + instruction); }
@@ -145,6 +145,12 @@ export class Harness extends EventEmitter {
   }
   async newSession() { if (this.busy) throw new Error('Cancel the current turn first'); await this.open(this.pi.SessionManager.create(this.cwd, this.folder)); }
   async resume(path: string) { if (this.busy) throw new Error('Cancel the current turn first'); await this.open(this.pi.SessionManager.open(path, this.folder, this.cwd)); }
+  async fork() {
+    if (this.busy) throw new Error('Cancel the current turn first');
+    if (!this.session?.sessionFile) throw new Error('Send a message before forking this session');
+    await this.open(this.pi.SessionManager.forkFrom(this.session.sessionFile, this.cwd, this.folder));
+  }
+  async diff() { const { stdout } = await execute('git', ['diff', '--stat'], { cwd: this.cwd }); const patch = await execute('git', ['diff', '--no-ext-diff'], { cwd: this.cwd, maxBuffer: 2_000_000 }); return stdout + '\n' + patch.stdout; }
   sessions() { return this.pi.SessionManager.list(this.cwd, this.folder); }
   async runAgent(prompt: string, options: { mode: 'research' | 'worktree'; model?: string; signal?: AbortSignal }): Promise<string> {
     const controller = new AbortController();
@@ -158,19 +164,19 @@ export class Harness extends EventEmitter {
         let cwd = this.cwd;
         if (options.mode === 'worktree') {
           await this.permissions.require('worktree', { task: task.id, prompt }, signal);
-          cwd = join(stateDir(), 'worktrees', task.id);
-          await mkdir(join(stateDir(), 'worktrees'), { recursive: true });
+          cwd = join(this.home, 'worktrees', task.id);
+          await mkdir(join(this.home, 'worktrees'), { recursive: true });
           await execute('git', ['worktree', 'add', '--detach', cwd, 'HEAD'], { cwd: this.cwd, signal });
           task.worktree = cwd;
         }
         const toolDefinitions = this.tools(cwd, true, options.mode === 'research');
         const { session, extensionsResult } = await this.pi.createAgentSession({
-          cwd, agentDir: stateDir(), modelRuntime: this.runtime,
+          cwd, agentDir: this.home, modelRuntime: this.runtime,
           model: options.model ? this.findModel(options.model) : this.session?.model,
           thinkingLevel: this.config.effort,
           resourceLoader: await resources(this.pi, cwd, 'You are a bounded Behzat subagent. Complete only the assigned task. Cite file paths and evidence. Return a concise report. Do not spawn agents.'),
           settingsManager: this.pi.SettingsManager.inMemory({ cacheWarming: 'off' }),
-          sessionManager: this.pi.SessionManager.create(cwd, join(stateDir(), 'agents', task.id)),
+          sessionManager: this.pi.SessionManager.create(cwd, join(this.home, 'agents', task.id)),
           tools: toolDefinitions.map(tool => tool.name), customTools: toolDefinitions,
         });
         if (extensionsResult.extensions.length) { session.dispose(); throw new Error('Extensions are forbidden in subagents'); }
@@ -197,16 +203,18 @@ export class Harness extends EventEmitter {
   }
   async launchWorkflow(definition: unknown) {
     await this.permissions.require('workflow', definition);
+    const owner = this.session;
     const { run, completion } = await this.workflows.launch(definition, this.cwd);
-    completion.then(result => this.deliverWorkflow(result)).catch(error => this.notice(`Workflow ${run.id} failed: ${error.message}`));
+    completion.then(result => this.deliverWorkflow(result, owner)).catch(error => this.notice(`Workflow ${run.id} failed: ${error.message}`));
     return run.id;
   }
-  private async deliverWorkflow(run: WorkflowRun) {
+  private async deliverWorkflow(run: WorkflowRun, owner?: AgentSession) {
     const report = run.definition.stages.map(stage => `## ${stage.id}\n${run.results[stage.id].result ?? ''}`).join('\n\n').slice(-100000);
     this.notice(`Workflow ${run.definition.name} completed. Run /workflow show ${run.id} to inspect all stages.`);
-    if (this.closed || !this.session) return;
-    if (this.busy) await this.session.followUp(`Workflow ${run.id} completed. Synthesize the findings and state any remaining work:\n${report}`);
-    else void this.prompt(`Workflow ${run.id} completed. Synthesize the findings and state any remaining work:\n${report}`).catch(error => this.notice(error.message));
+    if (this.closed || !this.session || this.session !== owner) return;
+    const message = `Workflow ${run.id} completed. Synthesize these findings directly and state any remaining work. Do not start another workflow for this completion report:\n${report}`;
+    if (this.busy) await this.session.followUp(message);
+    else void this.prompt(message, false).catch(error => this.notice(error.message));
   }
   private tools(cwd: string, child = false, readOnly = false): ToolDefinition[] {
     const pi = this.pi;
@@ -259,6 +267,9 @@ export class Harness extends EventEmitter {
   async close() {
     this.closed = true;
     await this.abort();
-    this.terminals.close(); this.unsubscribe?.(); this.session?.dispose();
+    await this.workflows.waitForIdle();
+    this.terminals.close();
+    await Promise.allSettled([...this.terminals.jobs.values()].map(job => job.exited));
+    this.unsubscribe?.(); this.session?.dispose();
   }
 }

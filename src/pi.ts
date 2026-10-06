@@ -14,9 +14,15 @@ export async function loadPi(): Promise<PiSdk> {
   }
   const executable = await realpath(process.execPath);
   const candidates = [
-    join(dirname(executable), '../runtime/node_modules/@earendil-works/pi-coding-agent/dist/index.js'),
-    join(homedir(), '.local/share/behzat/runtime/node_modules/@earendil-works/pi-coding-agent/dist/index.js'),
+    join(dirname(executable), '../runtime/node_modules/@earendil-works/pi-coding-agent/dist/behzat-sdk.js'),
+    join(homedir(), '.local/share/behzat/runtime/node_modules/@earendil-works/pi-coding-agent/dist/behzat-sdk.js'),
   ];
   for (const path of candidates) if (existsSync(path)) return import(pathToFileURL(path).href);
   return import(import.meta.resolve('@earendil-works/pi-coding-agent'));
+}
+
+export async function bundlePi(directory: string) {
+  const dist = join(directory, 'node_modules/@earendil-works/pi-coding-agent/dist');
+  const build = await Bun.build({ entrypoints: [join(dist, 'index.js')], target: 'bun', outdir: dist, naming: 'behzat-sdk.js' });
+  if (!build.success) throw new AggregateError(build.logs, 'Pi SDK runtime bundle failed');
 }

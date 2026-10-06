@@ -1,0 +1,9 @@
+{
+  "name": "Independent review and verification",
+  "stages": [
+    { "id": "architecture", "prompt": "Read the project instructions and investigate architecture risks. Cite exact files and evidence." },
+    { "id": "correctness", "prompt": "Independently investigate correctness and error handling. Cite exact files and evidence." },
+    { "id": "verify", "dependsOn": ["architecture", "correctness"], "prompt": "Try to refute each finding using the actual source. Separate verified problems from speculative concerns." },
+    { "id": "report", "dependsOn": ["verify"], "prompt": "Write a concise final review using only verified findings, and list any material verification gaps." }
+  ]
+}

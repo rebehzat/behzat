@@ -82,12 +82,13 @@ test('agent slots keep global concurrency bounded and remove cancelled waiters',
 test('background shell captures UTF-8, exit status, stdin and process cancellation', async () => {
   const terminals = new Terminals();
   try {
-    const job = terminals.start('read line; printf "received:%s:✓" "$line"', tmpdir());
-    const finished = once(job.process, 'close');
+    const job = terminals.start('printf "ready\\n"; read line; printf "received:%s:✓" "$line"', tmpdir());
+    const finished = job.exited;
+    for (let i = 0; i < 100 && !job.output.includes('ready'); i++) await Bun.sleep(5);
     terminals.send(job.id, 'hello\n'); await finished;
     expect(job.output).toContain('received:hello:✓'); expect(job.exitCode).toBe(0);
     const waiting = terminals.start('sleep 30', tmpdir());
-    const stopped = once(waiting.process, 'close'); terminals.stop(waiting.id); await stopped;
+    const stopped = waiting.exited; terminals.stop(waiting.id); await stopped;
     expect(waiting.status).toBe('exited');
   } finally { terminals.close(); }
 });
