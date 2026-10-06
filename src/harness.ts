@@ -36,10 +36,12 @@ export class Harness extends EventEmitter {
   readonly entries: Entry[] = [];
   busy = false;
   ultracode = false;
+  authenticating?: string;
   lastError?: string;
   private slots: Slots;
   private agents = new Set<AgentSession>();
   private controllers = new Set<AbortController>();
+  private logins = new Set<Promise<unknown>>();
   private unsubscribe?: () => void;
   private streamingEntry?: Entry;
   private closed = false;
@@ -129,8 +131,14 @@ export class Harness extends EventEmitter {
     await saveConfig(this.config, this.home); this.emit('change');
   }
   async login(provider: string, type: AuthType, interaction: AuthInteraction) {
-    await this.runtime.login(provider, type, interaction);
-    this.notice(`Connected ${provider}`);
+    if (this.authenticating) throw new Error('Cancel or finish the current provider login first');
+    const controller = new AbortController(); this.controllers.add(controller);
+    const signal = interaction.signal ? AbortSignal.any([interaction.signal, controller.signal]) : controller.signal;
+    this.authenticating = provider; this.emit('change');
+    const login = Promise.resolve().then(() => this.runtime.login(provider, type, { ...interaction, signal, prompt: prompt => interaction.prompt({ ...prompt, signal: prompt.signal ? AbortSignal.any([prompt.signal, signal]) : signal }) }));
+    this.logins.add(login);
+    try { await login; this.notice(`Connected ${provider}`); }
+    finally { controller.abort(); this.controllers.delete(controller); this.logins.delete(login); this.authenticating = undefined; this.emit('change'); }
   }
   async prompt(text: string, orchestrate = true) {
     if (!this.session) throw new Error('Session not initialized');
@@ -153,6 +161,7 @@ export class Harness extends EventEmitter {
     this.workflows.cancelAll();
     for (const controller of this.controllers) controller.abort(new Error('Cancelled'));
     await Promise.all([this.session?.abort(), ...[...this.agents].map(session => session.abort())]);
+    await Promise.allSettled([...this.logins]);
   }
   async newSession() { if (this.busy) throw new Error('Cancel the current turn first'); await this.open(this.pi.SessionManager.create(this.cwd, this.folder)); }
   async resume(path: string) { if (this.busy) throw new Error('Cancel the current turn first'); await this.open(this.pi.SessionManager.open(path, this.folder, this.cwd)); }

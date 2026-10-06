@@ -46,6 +46,8 @@ subscription, device-code, browser callback and manual-code interactions through
 the terminal UI. Existing `~/.pi/agent/auth.json`, provider environments and
 `models.json` remain usable. Secret entry is masked and excluded from transcripts.
 `/logout` disconnects a provider from the shared Pi credential store.
+Esc cancels an in-progress provider login, including browser/device waiting;
+closing Behzat aborts the login and waits for Pi to clean up.
 
 Credentials supplied by a Pi extension are deliberately unavailable because
 **all Pi extensions are disabled**: global, project, package, built-in, inline,
