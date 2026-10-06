@@ -42,6 +42,7 @@ export function validateWorkflow(input: unknown): Workflow {
 export class Workflows extends EventEmitter {
   runs = new Map<string, WorkflowRun>();
   private controllers = new Map<string, AbortController>();
+  private executions = new Set<Promise<WorkflowRun>>();
   constructor(private readonly directory: string, private readonly concurrency: number, private readonly runner: AgentRunner) { super(); }
   async start(input: unknown, cwd: string) {
     const { completion } = await this.launch(input, cwd);
@@ -53,7 +54,7 @@ export class Workflows extends EventEmitter {
     for (const stage of definition.stages) run.results[stage.id] = { status: 'pending' };
     await this.save(run);
     this.runs.set(run.id, run);
-    const completion = this.execute(run);
+    const completion = this.track(this.execute(run));
     return { run, completion };
   }
   async resume(id: string, cwd: string) {
@@ -65,7 +66,7 @@ export class Workflows extends EventEmitter {
     for (const stage of run.definition.stages) if (run.results[stage.id]?.status !== 'done') run.results[stage.id] = { status: 'pending' };
     run.status = 'running';
     this.runs.set(id, run);
-    return this.execute(run);
+    return this.track(this.execute(run));
   }
   async listSaved(): Promise<WorkflowRun[]> {
     try {
@@ -75,6 +76,12 @@ export class Workflows extends EventEmitter {
   }
   cancel(id: string) { this.controllers.get(id)?.abort(new Error('Workflow cancelled')); }
   cancelAll() { for (const controller of this.controllers.values()) controller.abort(new Error('Harness closing')); }
+  async waitForIdle() { await Promise.allSettled([...this.executions]); }
+  private track(completion: Promise<WorkflowRun>) {
+    this.executions.add(completion);
+    completion.then(() => this.executions.delete(completion), () => this.executions.delete(completion));
+    return completion;
+  }
   private async save(run: WorkflowRun) { await atomicJson(join(this.directory, `${run.id}.json`), run); }
   private async execute(run: WorkflowRun) {
     const controller = new AbortController();
