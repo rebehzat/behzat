@@ -1,6 +1,6 @@
 {
   "name": "behzat",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "An independent, extension-free Pi harness with an OpenCode V2-style terminal UI",
   "type": "module",
   "private": true,
