@@ -1,3 +1,6 @@
+import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
+import { atomicJson } from './config.ts';
 import { z } from 'zod';
 
 export const SearchQuery = z.object({
@@ -9,9 +12,17 @@ export const SearchQuery = z.object({
   recency_minutes: z.number().int().min(1).max(5256000).optional(),
 });
 export class TinyFish {
-  constructor(private readonly key = process.env.TINYFISH_API_KEY, private readonly fetcher: typeof fetch = fetch) {}
+  constructor(private key = process.env.TINYFISH_API_KEY, private readonly fetcher: typeof fetch = fetch) {}
+  get configured() { return Boolean(this.key); }
+  async loadKey(home: string) {
+    try { const value = JSON.parse(await readFile(join(home, 'tinyfish-auth.json'), 'utf8')); if (!this.key && typeof value.key === 'string') this.key = value.key; }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('Unable to read TinyFish credentials'); }
+  }
+  async saveKey(home: string, key: string) {
+    await atomicJson(join(home, 'tinyfish-auth.json'), { key }); this.key = key;
+  }
   private async request(url: string, options: RequestInit, signal?: AbortSignal) {
-    if (!this.key) throw new Error('Set TINYFISH_API_KEY to use web search and fetch.');
+    if (!this.key) throw new Error('Use /apikey tinyfish or set TINYFISH_API_KEY to use web search and fetch.');
     const response = await this.fetcher(url, {
       ...options, headers: { ...options.headers, 'X-API-Key': this.key },
       signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60_000)]) : AbortSignal.timeout(60_000),

@@ -6,7 +6,9 @@ Behzat keeps Pi unmodified and separately updateable. Its independent terminal
 interface uses OpenTUI and the OpenCode V2 theme and layout as its reference. The
 usual screen shows the conversation, composer, model, effort, context and cost.
 Ultracode, workflows, subagents and terminals show status only while active;
-`Ctrl+T` opens details.
+A session sidebar appears on wide terminals; `Ctrl+T` toggles it.
+The composer stays at the bottom, with command suggestions and the effort
+control directly above it. Narrow terminals automatically hide the sidebar.
 
 ## Install
 
@@ -45,6 +47,8 @@ reviewed as PRs with the locked dependency graph and binary CI.
 subscription, device-code, browser callback and manual-code interactions through
 the terminal UI. Existing `~/.pi/agent/auth.json`, provider environments and
 `models.json` remain usable. Secret entry is masked and excluded from transcripts.
+`/apikey PROVIDER` skips the login-method picker and opens a masked key prompt.
+`/apikey tinyfish` securely saves a search key for subsequent sessions.
 `/logout` disconnects a provider from the shared Pi credential store.
 Esc cancels an in-progress provider login, including browser/device waiting;
 closing Behzat aborts the login and waits for Pi to clean up.
@@ -65,7 +69,11 @@ Markdown `AGENTS.md` and `CLAUDE.md` context files are still read.
 | `/ultracode on`, `/ultracode off` | Toggle orchestration independently from model effort |
 | `Shift+Tab`, `/approval ask\|auto\|plan` | Cycle approval modes |
 | `Ctrl+Y`, `Ctrl+N` | Allow or deny the first pending tool request |
-| `Ctrl+P`, Tab | Command palette and slash completion |
+| `/`, `Ctrl+P`, `/commands` | Searchable command menu; arrows select, Tab completes, Enter chooses |
+| `/apikey [PROVIDER]` | Masked API-key input; includes TinyFish |
+| `Ctrl+D`, `/quit` | Cancel active work, save state, and exit cleanly |
+| `/animations on\|off` | Persistently enable or disable animated status |
+| `/rename [NAME]`, `/stop` | Name the session or cancel active work |
 | Esc | Cancel the current run, agents and workflows |
 | `/new`, `/resume`, `/fork` | Persistent sessions and conversation branches |
 | `/compact`, `/context`, `/export` | Context management, usage and JSONL export |
@@ -77,16 +85,20 @@ Markdown `AGENTS.md` and `CLAUDE.md` context files are still read.
 | `/terminal start COMMAND` | Start a native background PTY |
 | `/terminal read ID`, `send ID TEXT`, `stop ID` | Inspect output, send input and terminate the process group |
 | `/skill NAME` | Read project `.behzat/skills/NAME/SKILL.md` or `.claude/skills/NAME/SKILL.md` |
-| `/tasks`, `Ctrl+T` | Task and approval details |
+| `/tasks`, `/sidebar`, `Ctrl+T` | Task details and sidebar visibility |
 | `/todos` | Persistent task list for the current conversation |
 | `/mcp list`, `connect NAME`, `disconnect NAME`, `tools [NAME]` | Explicit MCP connections and tool discovery |
 
 Shift+Enter inserts a newline. PageUp/PageDown scroll the conversation. Up from
-an empty composer recalls input. Use `--reduced-motion` to stop animations.
+an empty composer recalls input. Use `/animations on` to restore motion if it was disabled in saved config.
+Use `/animations off` or `--reduced-motion` to stop animations.
 
 ## TinyFish
 
-Export `TINYFISH_API_KEY` before launching. The `web_search` and `web_fetch` tools
+Use `/apikey tinyfish` inside the TUI, or export `TINYFISH_API_KEY` before launching.
+The masked prompt stores its key in `$BEHZAT_HOME/tinyfish-auth.json` with mode
+0600; credentials never enter the composer, command history, or transcript.
+An environment key takes precedence at startup. The `web_search` and `web_fetch` tools
 use TinyFish's documented search and markdown fetch APIs. Search supports domain
 filters and web, news and research-paper modes. Without a key the tools return an
 actionable configuration error. No key is embedded in the repository or release.

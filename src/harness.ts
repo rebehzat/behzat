@@ -58,6 +58,7 @@ export class Harness extends EventEmitter {
     for (const emitter of [this.permissions, this.terminals, this.workflows, this.mcp, this.todos, this.questions]) emitter.on('change', () => this.emit('change'));
   }
   async initialize(options: { resume?: string; continue?: boolean; runtime?: ModelRuntime } = {}) {
+    await this.tinyfish.loadKey(this.home);
     this.pi = await loadPi();
     this.runtime = options.runtime ?? await this.pi.ModelRuntime.create();
     if (this.runtime.getError()) this.notice(this.runtime.getError()!);
