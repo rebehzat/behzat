@@ -123,7 +123,7 @@ export class Harness extends EventEmitter {
     await this.runtime.login(provider, type, interaction);
     this.notice(`Connected ${provider}`);
   }
-  async prompt(text: string) {
+  async prompt(text: string, orchestrate = true) {
     if (!this.session) throw new Error('Session not initialized');
     if (this.busy) {
       await this.session.followUp(text);
@@ -131,7 +131,7 @@ export class Harness extends EventEmitter {
     }
     this.busy = true; this.lastError = undefined;
     this.entries.push({ id: crypto.randomUUID(), role: 'user', text }); this.emit('change');
-    const instruction = this.ultracode
+    const instruction = this.ultracode && orchestrate
       ? '\n\n[Behzat Ultracode is enabled. For a substantive task, author and launch a workflow_run DAG with independent investigation, adversarial verification, and synthesis stages. Use worktree mode only for editing stages. For a simple task answer directly. Await background reports before claiming completion.]'
       : '';
     try { await this.session.prompt(text + instruction); }
@@ -203,16 +203,18 @@ export class Harness extends EventEmitter {
   }
   async launchWorkflow(definition: unknown) {
     await this.permissions.require('workflow', definition);
+    const owner = this.session;
     const { run, completion } = await this.workflows.launch(definition, this.cwd);
-    completion.then(result => this.deliverWorkflow(result)).catch(error => this.notice(`Workflow ${run.id} failed: ${error.message}`));
+    completion.then(result => this.deliverWorkflow(result, owner)).catch(error => this.notice(`Workflow ${run.id} failed: ${error.message}`));
     return run.id;
   }
-  private async deliverWorkflow(run: WorkflowRun) {
+  private async deliverWorkflow(run: WorkflowRun, owner?: AgentSession) {
     const report = run.definition.stages.map(stage => `## ${stage.id}\n${run.results[stage.id].result ?? ''}`).join('\n\n').slice(-100000);
     this.notice(`Workflow ${run.definition.name} completed. Run /workflow show ${run.id} to inspect all stages.`);
-    if (this.closed || !this.session) return;
-    if (this.busy) await this.session.followUp(`Workflow ${run.id} completed. Synthesize the findings and state any remaining work:\n${report}`);
-    else void this.prompt(`Workflow ${run.id} completed. Synthesize the findings and state any remaining work:\n${report}`).catch(error => this.notice(error.message));
+    if (this.closed || !this.session || this.session !== owner) return;
+    const message = `Workflow ${run.id} completed. Synthesize these findings directly and state any remaining work. Do not start another workflow for this completion report:\n${report}`;
+    if (this.busy) await this.session.followUp(message);
+    else void this.prompt(message, false).catch(error => this.notice(error.message));
   }
   private tools(cwd: string, child = false, readOnly = false): ToolDefinition[] {
     const pi = this.pi;

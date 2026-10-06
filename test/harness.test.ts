@@ -6,17 +6,27 @@ import { Harness } from '../src/harness.ts';
 import { Config } from '../src/config.ts';
 import { loadPi } from '../src/pi.ts';
 
-async function fixture(approval: 'ask' | 'auto' | 'plan') {
+async function fixture(approval: 'ask' | 'auto' | 'plan', workflow = false) {
   const directory = await mkdtemp(join(tmpdir(), 'behzat-harness-'));
   let requests = 0;
+  const bodies: unknown[] = [];
   const server = Bun.serve({ port: 0, fetch: async request => {
     const input = await request.json() as { messages: { role: string }[] };
     requests++;
+    bodies.push(input);
     const completed = input.messages.some(message => message.role === 'tool');
-    const delta = completed ? { content: 'The tool result has been checked.' } : { tool_calls: [{ index: 0, id: 'write-1', type: 'function', function: { name: 'write', arguments: JSON.stringify({ path: 'result.txt', content: 'verified write' }) } }] };
+    const initial = JSON.stringify(input.messages).includes('Launch the review');
+    const synthesis = JSON.stringify(input.messages.at(-1)).includes('Do not start another workflow');
+    if (workflow && !initial) await Bun.sleep(30);
+    const delta = workflow
+      ? synthesis ? { content: 'Synthesis complete.' }
+        : completed ? { content: 'Waiting for workflow report.' }
+        : initial ? { tool_calls: [{ index: 0, id: 'workflow-1', type: 'function', function: { name: 'workflow_run', arguments: JSON.stringify({ name: 'review', stages: [{ id: 'inspect', prompt: 'Inspect the code' }] }) } }] }
+        : { content: 'Independent verified finding.' }
+      : completed ? { content: 'The tool result has been checked.' } : { tool_calls: [{ index: 0, id: 'write-1', type: 'function', function: { name: 'write', arguments: JSON.stringify({ path: 'result.txt', content: 'verified write' }) } }] };
     const chunks = [
       { id: 'fake', object: 'chat.completion.chunk', choices: [{ index: 0, delta, finish_reason: null }] },
-      { id: 'fake', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: completed ? 'stop' : 'tool_calls' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } },
+      { id: 'fake', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' in delta ? 'tool_calls' : 'stop' }], usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 } },
     ];
     return new Response(chunks.map(chunk => `data: ${JSON.stringify(chunk)}\n\n`).join('') + 'data: [DONE]\n\n', { headers: { 'Content-Type': 'text/event-stream' } });
   } });
@@ -25,8 +35,25 @@ async function fixture(approval: 'ask' | 'auto' | 'plan') {
   runtime.registerProvider('behzat-test', { api: 'openai-completions', baseUrl: server.url.toString(), apiKey: 'local-test-key', models: [{ id: 'fake', name: 'Fake local model', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 4096 }] });
   const harness = new Harness(directory, Config.parse({ model: 'behzat-test/fake', approval }), join(directory, 'state'));
   await harness.initialize({ runtime });
-  return { harness, directory, requests: () => requests, close: async () => { await harness.close(); server.stop(true); await rm(directory, { recursive: true, force: true }); } };
+  return { harness, directory, bodies, requests: () => requests, close: async () => { await harness.close(); server.stop(true); await rm(directory, { recursive: true, force: true }); } };
 }
+
+test('Ultracode workflow runs real subagents and synthesizes without recursively orchestrating', async () => {
+  const run = await fixture('auto', true);
+  try {
+    run.harness.ultracode = true;
+    await run.harness.prompt('Launch the review');
+    await run.harness.workflows.waitForIdle();
+    for (let i = 0; i < 200 && run.harness.busy; i++) await Bun.sleep(5);
+    expect(run.harness.session!.getLastAssistantText()).toBe('Synthesis complete.');
+    expect(run.harness.tasks.size).toBe(1);
+    expect([...run.harness.workflows.runs.values()][0].status).toBe('done');
+    const last = run.bodies.at(-1) as { messages: unknown[] };
+    expect(JSON.stringify(last.messages.at(-1))).toContain('Independent verified finding.');
+    expect(JSON.stringify(last.messages.at(-1))).not.toContain('[Behzat Ultracode');
+    expect(run.requests()).toBe(4);
+  } finally { await run.close(); }
+});
 
 test('real Pi tool dispatch cannot bypass ask or plan guards', async () => {
   for (const mode of ['ask', 'plan'] as const) {

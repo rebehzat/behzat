@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { Harness } from './harness.ts';
 import { readConfig, efforts, stateDir, type Effort } from './config.ts';
 import { loadPi, bundlePi } from './pi.ts';
+import { resources } from './resources.ts';
 import manifest from '../package.json';
 
 const help = `behzat ${manifest.version} — an independent Pi harness
@@ -49,7 +50,13 @@ async function main() {
     if (positionals[0] === 'providers') {
       console.log(runtime.getProviders().map(provider => `${provider.id}\t${provider.name}\t${provider.auth.oauth ? 'oauth ' : ''}${provider.auth.apiKey?.login ? 'api_key' : 'ambient'}`).join('\n')); return;
     }
-    console.log(JSON.stringify({ behzat: manifest.version, pi: 'external SDK', extensions: 0, providers: runtime.getProviders().length, models: runtime.getModels().length, connectedModels: runtime.getAvailableSnapshot().length, tinyfish: Boolean(process.env.TINYFISH_API_KEY), state: stateDir(), runtimeError: runtime.getError() ?? null }, null, 2)); return;
+    const cwd = process.cwd();
+    const { session, extensionsResult } = await pi.createAgentSession({ cwd, agentDir: stateDir(), modelRuntime: runtime, resourceLoader: await resources(pi, cwd), sessionManager: pi.SessionManager.inMemory(cwd), settingsManager: pi.SettingsManager.inMemory({ cacheWarming: 'off' }), tools: [] });
+    try {
+      if (extensionsResult.extensions.length) throw new Error('Pi compatibility check discovered forbidden extensions');
+      console.log(JSON.stringify({ behzat: manifest.version, pi: 'external SDK', extensions: extensionsResult.extensions.length, sessionCompatible: true, providers: runtime.getProviders().length, models: runtime.getModels().length, connectedModels: runtime.getAvailableSnapshot().length, tinyfish: Boolean(process.env.TINYFISH_API_KEY), state: stateDir(), runtimeError: runtime.getError() ?? null }, null, 2));
+    } finally { session.dispose(); }
+    return;
   }
   const cwd = await realpath(resolve(values.cwd ?? process.cwd()));
   const config = await readConfig();

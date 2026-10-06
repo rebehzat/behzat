@@ -166,7 +166,7 @@ export class TerminalUI {
   }
   private selectSlider(x: number) {
     if (this.dialog?.kind !== 'effort') return;
-    this.dialog.selected = Math.max(0, Math.min(this.dialog.choices.length - 1, Math.floor((x - this.modalList.x) / 7)));
+    this.dialog.selected = Math.max(0, Math.min(this.dialog.choices.length - 1, Math.floor((x - this.modalList.x) / 8)));
     this.drawDialog();
   }
   private taskSummary() {
@@ -252,7 +252,7 @@ export class TerminalUI {
     this.modalInput.focusedTextColor = p.text;
     if (dialog.kind === 'input') this.modalList.content = '';
     else if (dialog.kind === 'effort') {
-      const track = this.renderer.width >= 80 ? `${dialog.choices.map((_item, i) => i === dialog.selected ? '  ●    ' : '  ─    ').join('')}\n${dialog.choices.map(item => item.label.padEnd(7)).join('')}\n\n` : '';
+      const track = this.renderer.width >= 80 ? `${dialog.choices.map((_item, i) => i === dialog.selected ? '  ●     ' : '  ─     ').join('')}\n${dialog.choices.map(item => item.label.padEnd(8)).join('')}\n\n` : '';
       const selected = dialog.choices[dialog.selected].value;
       const info = `${track}Selected: ${selected}\nActual model effort: ${this.harness.session?.thinkingLevel ?? 'off'}\nUltracode adds automatic workflow orchestration.`;
       this.modalList.content = selected === 'ultracode' ? t`${fg(rainbow[this.phase % rainbow.length])(info)}` : info;
